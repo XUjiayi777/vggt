@@ -147,3 +147,9 @@ skyseg.onnx
 # pixi environments
 .pixi
 *.egg-info
+
+# Google cloud sdk
+datasets/google-cloud-sdk
+
+# Model weights
+weights/
