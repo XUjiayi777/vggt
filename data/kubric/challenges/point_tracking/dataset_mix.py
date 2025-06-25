@@ -32,7 +32,6 @@ from PIL import Image
 from tensorflow_graphics.geometry.transformation import rotation_matrix_3d
 import pdb
 
-
 def project_point(cam, point3d, num_frames):
     """Compute the image space coordinates [0, 1] for a set of points.
 
@@ -47,7 +46,7 @@ def project_point(cam, point3d, num_frames):
       Image coordinates in 2D.  The last coordinate is an indicator of whether
         the point is behind the camera.
     """
-    print("project_point()")
+
     homo_transform = tf.linalg.inv(cam["matrix_world"])
     homo_intrinsics = tf.zeros((num_frames, 3, 1), dtype=tf.float32)
     homo_intrinsics = tf.concat([cam["intrinsics"], homo_intrinsics], axis=2)
@@ -76,7 +75,6 @@ def unproject(coord, cam, depth):
     Returns:
       Image coordinates in 3D.
     """
-    print("unproject()")
     shp = tf.convert_to_tensor(tf.shape(depth))
     idx = coord[:, 0] * shp[1] + coord[:, 1]
     coord = tf.cast(coord[..., ::-1], tf.float32)
@@ -134,7 +132,6 @@ def reproject(coords, camera, camera_pos, num_frames, bbox=None):
       camera.  They are of shape [num_points, num_frames, 3] and
       [num_points, num_frames] respectively.
     """
-    print("reproject()")
     # First, reconstruct points in the local object coordinate system.
     if bbox is not None:
         coord_box = list(itertools.product([-0.5, 0.5], [-0.5, 0.5], [-0.5, 0.5]))
@@ -198,7 +195,7 @@ def estimate_occlusion_by_depth_and_segment(
     Returns:
       Depth for each point.
     """
-    print("estimate_occlusion_by_depth_and_segment()")
+
     # need to convert from raster to pixel coordinates
     x = x - 0.5
     y = y - 0.5
@@ -247,7 +244,6 @@ def get_camera_matrices(
     input_size,
     num_frames=None,
 ):
-    print("get_camera_matrices()")
     """Tf function that converts camera positions into projection matrices."""
     intrinsics = []
     matrix_world = []
@@ -290,7 +286,6 @@ def get_camera_matrices(
 
 def quat2rot(quats):
     """Convert a list of quaternions to rotation matrices."""
-    print("quat2rot()")
     rotation_matrices = []
     for frame_idx in range(quats.shape[0]):
         quat = quats[frame_idx]
@@ -306,7 +301,6 @@ def rotate_surface_normals(
     obj_rot_mats,
     frame_for_query,
 ):
-    print("rotate_surface_normals()")
     """Points are occluded if the surface normal points away from the camera."""
     query_obj_rot_mat = tf.gather(obj_rot_mats, frame_for_query)
     obj_frame_normals = tf.einsum(
@@ -377,7 +371,6 @@ def single_object_reproject(
       window.
 
     """
-    print("single_object_reproject()")
     # Finally, reproject
     reproj, depth_proj, world_pos, cam_pos = reproject(
         pt,
@@ -439,7 +432,6 @@ def get_num_to_sample(counts, max_seg_id, max_sampled_frac, tracks_to_sample):
     Returns:
       The number of points to sample for each object.  An int array of length n.
     """
-    print("get_num_to_sample()")
     seg_order = tf.argsort(counts)
     sorted_counts = tf.gather(counts, seg_order)
     initializer = (0, tracks_to_sample, 0)
@@ -553,9 +545,9 @@ def track_points(
     depth_min = depth_range_f32[0]
     depth_max = depth_range_f32[1]
     depth_f32 = tf.cast(depth, tf.float32)
-    depth_map = depth_min + depth_f32 * (depth_max - depth_min) / 65535 # the maximum possible value for uint16
+    depth_map = depth_min + depth_f32 * (depth_max - depth_min) / np.iinfo(np.uint16).max
 
-    surface_normal_map = surface_normals / 65535 * 2.0 - 1.0
+    surface_normal_map = surface_normals / np.iinfo(np.uint16).max * 2.0 - 1.0
 
     input_size = object_coordinates.shape.as_list()[1:3]
     num_frames = object_coordinates.shape.as_list()[0]
@@ -659,7 +651,9 @@ def track_points(
     start_vec = [0, int(window[0]), int(window[1])]
     end_vec = [num_frames, int(window[2]), int(window[3])]
     z, y, x = tf.meshgrid(*[tf.range(st, ed) for st, ed in zip(start_vec, end_vec)], indexing="ij")
-    pix_coords = tf.reshape(tf.stack([z, y, x], axis=-1), [-1, 3])
+    pix_coords = tf.reshape(tf.stack([z, y, x], axis=-1), [-1, 3]) # [num_pixels, 3]
+    # num_pixels = num_frames * height * width - The total number of pixels in the cropped window
+    #z: The frame index (time dimension) y: The vertical pixel coordinate x: The horizontal pixel coordinate.
 
     # breakpoint()
     for i in range(max_seg_id):
@@ -673,11 +667,11 @@ def track_points(
         # mask = tf.math.logical_and(tf.equal(tf.reshape(segmentations_box, [-1]), i), tf.equal(pix_coords[:,0], 0))
         mask = tf.math.logical_and(
             tf.equal(tf.reshape(segmentations_box, [-1]), i), tf.equal(pix_coords[:, 0], query_frame)
-        )
+        ) # [num_pixels, 3]
         # mask = tf.equal(tf.reshape(segmentations_box, [-1]), i)
-
-        pt = tf.boolean_mask(tf.reshape(object_coordinates_box, [-1, 3]), mask)
-        normals = tf.boolean_mask(tf.reshape(surface_normals_box, [-1, 3]), mask)
+        
+        # contains 3D world coordinates for a subset of pixels that satisfy a condition (e.g., belong to a specific object)
+        pt = tf.boolean_mask(tf.reshape(object_coordinates_box, [-1, 3]), mask) 
         trust_sn_mask = tf.boolean_mask(tf.reshape(trust_sn_box, [-1, 1]), mask)
         # idx = tf.cond(
         #     tf.shape(pt)[0] > 0,
@@ -706,7 +700,7 @@ def track_points(
                 pt_coords_chunk = tf.boolean_mask(pt_coords, tf.equal(pt_coords[:, 0], fr))
                 pt_coords_reorder.append(pt_coords_chunk)
 
-                pt_3d.append(unproject(pt_coords_chunk[:, 1:], get_camera(fr), depth_map[fr]))
+                pt_3d.append(unproject(pt_coords_chunk[:, 1:], get_camera(fr), depth_map[fr])) # depthmap [num_frames, height, width]
             pt = tf.concat(pt_3d, axis=0)
             chosen_points.append(tf.concat(pt_coords_reorder, axis=0))
             bbox = None
@@ -716,7 +710,7 @@ def track_points(
             # For any other object, we just use the point coordinates supplied by
             # kubric.
             # pt = tf.gather(pt, idx)
-            pt = pt / np.iinfo(np.uint16).max - 0.5
+            pt = pt / np.iinfo(np.uint16).max - 0.5 # range (-0.5,0.5)
             chosen_points.append(pt_coords)
             # if obj_id>num_objects, then we won't have a box.  We also won't have
             # points, so just use a dummy to prevent tf from crashing.
@@ -912,7 +906,6 @@ def track_points_sparse(
         a boolean, where True means the point is occluded.
 
     """
-    print("track_points_sparse()")
     chosen_points = []
     all_reproj = []
     all_occ = []
@@ -927,9 +920,9 @@ def track_points_sparse(
     depth_min = depth_range_f32[0]
     depth_max = depth_range_f32[1]
     depth_f32 = tf.cast(depth, tf.float32)
-    depth_map = depth_min + depth_f32 * (depth_max - depth_min) / 65535
+    depth_map = depth_min + depth_f32 * (depth_max - depth_min) / np.iinfo(np.uint16).max
 
-    surface_normal_map = surface_normals / 65535 * 2.0 - 1.0
+    surface_normal_map = surface_normals / np.iinfo(np.uint16).max * 2.0 - 1.0
 
     input_size = object_coordinates.shape.as_list()[1:3]
     num_frames = object_coordinates.shape.as_list()[0]
@@ -1033,7 +1026,7 @@ def track_points_sparse(
     start_vec = [0, int(window[0]), int(window[1])]
     end_vec = [num_frames, int(window[2]), int(window[3])]
     z, y, x = tf.meshgrid(*[tf.range(st, ed) for st, ed in zip(start_vec, end_vec)], indexing="ij")
-    pix_coords = tf.reshape(tf.stack([z, y, x], axis=-1), [-1, 3])
+    pix_coords = tf.reshape(tf.stack([z, y, x], axis=-1), [-1, 3]) # [num_pixels, 3]
 
     # breakpoint()
     for i in range(max_seg_id):
@@ -1046,9 +1039,9 @@ def track_points_sparse(
         # query_frame = num_frames - 1
         # mask = tf.math.logical_and(tf.equal(tf.reshape(segmentations_box, [-1]), i), tf.equal(pix_coords[:,0], 0))
         # mask = tf.math.logical_and(tf.equal(tf.reshape(segmentations_box, [-1]), i), tf.equal(pix_coords[:, 0], query_frame))
-        mask = tf.equal(tf.reshape(segmentations_box, [-1]), i)
+        mask = tf.equal(tf.reshape(segmentations_box, [-1]), i) 
 
-        pt = tf.boolean_mask(tf.reshape(object_coordinates_box, [-1, 3]), mask)
+        pt = tf.boolean_mask(tf.reshape(object_coordinates_box, [-1, 3]), mask) # object coorninates belongs to a specific object
         normals = tf.boolean_mask(tf.reshape(surface_normals_box, [-1, 3]), mask)
         trust_sn_mask = tf.boolean_mask(tf.reshape(trust_sn_box, [-1, 1]), mask)
         idx = tf.cond(
@@ -1239,8 +1232,6 @@ def _get_distorted_bounding_box(
         max_attempts=max_attempts,
         use_image_if_no_bounding_boxes=True,
     )
-    # bbox_begin: [offset_height, offset_width, 0]
-    # bbox_size: [target_height, target_width, -1]
 
     # Crop the image to the specified bounding box.
     offset_y, offset_x, _ = tf.unstack(bbox_begin)
@@ -1251,10 +1242,10 @@ def _get_distorted_bounding_box(
 
 def add_tracks(
     data,
-    train_size=(128, 128),
+    train_size=(256, 256),
     vflip=False,
     random_crop=True,
-    tracks_to_sample=128,
+    tracks_to_sample=256,
     sampling_stride=4,
     max_seg_id=25,
     max_sampled_frac=0.1,
@@ -1299,7 +1290,6 @@ def add_tracks(
         The cropped video, normalized into the range [-1, 1]
 
     """
-    # print("add tracks()")
     shp = data["video"].shape.as_list()
     num_frames = shp[0]
     if any([s % sampling_stride != 0 for s in shp[:-1]]):
@@ -1357,10 +1347,10 @@ def add_tracks(
         query_frame=0,
     )
 
-    query_points.set_shape([16384, 3])
-    target_points.set_shape([16384, num_frames, 2])
-    occluded.set_shape([16384, num_frames])
-    reproj_depth.set_shape([16384, num_frames])
+    query_points.set_shape([262144, 3])
+    target_points.set_shape([262144, num_frames, 2])
+    occluded.set_shape([262144, num_frames])
+    reproj_depth.set_shape([262144, num_frames])
 
     # NOTE 23-th to first
     reverse_query_points, reverse_target_points, reverse_occluded, _, reverse_reproj_depth, _, _ = track_points(
@@ -1384,10 +1374,10 @@ def add_tracks(
         query_frame=23,
     )
 
-    reverse_query_points.set_shape([16384, 3])
-    reverse_target_points.set_shape([16384, num_frames, 2])
-    reverse_occluded.set_shape([16384, num_frames])
-    reverse_reproj_depth.set_shape([16384, num_frames])
+    reverse_query_points.set_shape([262144, 3])
+    reverse_target_points.set_shape([262144, num_frames, 2])
+    reverse_occluded.set_shape([262144, num_frames])
+    reverse_reproj_depth.set_shape([262144, num_frames])
 
     sparse_query_points, sparse_target_points, sparse_occluded, _, sparse_reproj_depth, _, _ = track_points_sparse(
         data["object_coordinates"],
@@ -1435,15 +1425,15 @@ def add_tracks(
 
 
 def create_point_tracking_dataset(
-    raw_dir="./datasets/movi_a",
-    train_size=(128, 128),
-    shuffle_buffer_size=128,
+    raw_dir="./datasets/movif",
+    train_size=(256, 256),
+    shuffle_buffer_size=256,
     split="train",
     batch_dims=tuple(),
     repeat=True,
     vflip=False,
     random_crop=True,
-    tracks_to_sample=128,
+    tracks_to_sample=256,
     sampling_stride=4,
     max_seg_id=25,
     max_sampled_frac=0.1,
@@ -1483,9 +1473,7 @@ def create_point_tracking_dataset(
     Returns:
       The dataset generator.
     """
-    # print("create_point_tracking_dataset()")
-    print("raw_dir",raw_dir)
-    print("train_size", train_size)
+
     ds = tfds.load(
         "movi_a/128x128:1.0.0",
         data_dir=raw_dir,
@@ -1497,7 +1485,7 @@ def create_point_tracking_dataset(
     ds = ds[split]
     if repeat:
         ds = ds.repeat()
-        
+
     ds = ds.map(
         functools.partial(
             add_tracks,
@@ -1524,7 +1512,6 @@ def create_point_tracking_dataset(
 
 def plot_tracks(rgb, points, occluded, trackgroup=None):
     """Plot tracks with matplotlib."""
-    print("plot_tracks()")
     disp = []
     cmap = plt.cm.hsv
 
@@ -1579,7 +1566,6 @@ def plot_tracks(rgb, points, occluded, trackgroup=None):
 
 
 def get_args_parser():
-    print("get_args_parser()")
     parser = argparse.ArgumentParser()
     parser.add_argument("--raw_dir", type=str, default="./datasets/movi_f/", help="path to raw movif data")
     parser.add_argument(
