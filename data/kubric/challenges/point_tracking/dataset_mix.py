@@ -672,6 +672,7 @@ def track_points(
         
         # contains 3D world coordinates for a subset of pixels that satisfy a condition (e.g., belong to a specific object)
         pt = tf.boolean_mask(tf.reshape(object_coordinates_box, [-1, 3]), mask) 
+        normals = tf.boolean_mask(tf.reshape(surface_normals_box, [-1, 3]), mask)
         trust_sn_mask = tf.boolean_mask(tf.reshape(trust_sn_box, [-1, 1]), mask)
         # idx = tf.cond(
         #     tf.shape(pt)[0] > 0,
@@ -1242,7 +1243,7 @@ def _get_distorted_bounding_box(
 
 def add_tracks(
     data,
-    train_size=(256, 256),
+    train_size,
     vflip=False,
     random_crop=True,
     tracks_to_sample=256,
@@ -1347,10 +1348,11 @@ def add_tracks(
         query_frame=0,
     )
 
-    query_points.set_shape([262144, 3])
-    target_points.set_shape([262144, num_frames, 2])
-    occluded.set_shape([262144, num_frames])
-    reproj_depth.set_shape([262144, num_frames])
+    num_pixels_per_frame = train_size[0] * train_size[1]
+    query_points.set_shape([num_pixels_per_frame, 3])
+    target_points.set_shape([num_pixels_per_frame, num_frames, 2])
+    occluded.set_shape([ num_pixels_per_frame, num_frames])
+    reproj_depth.set_shape([ num_pixels_per_frame, num_frames])
 
     # NOTE 23-th to first
     reverse_query_points, reverse_target_points, reverse_occluded, _, reverse_reproj_depth, _, _ = track_points(
@@ -1374,10 +1376,10 @@ def add_tracks(
         query_frame=23,
     )
 
-    reverse_query_points.set_shape([262144, 3])
-    reverse_target_points.set_shape([262144, num_frames, 2])
-    reverse_occluded.set_shape([262144, num_frames])
-    reverse_reproj_depth.set_shape([262144, num_frames])
+    reverse_query_points.set_shape([ num_pixels_per_frame, 3])
+    reverse_target_points.set_shape([ num_pixels_per_frame, num_frames, 2])
+    reverse_occluded.set_shape([  num_pixels_per_frame, num_frames])
+    reverse_reproj_depth.set_shape([  num_pixels_per_frame, num_frames])
 
     sparse_query_points, sparse_target_points, sparse_occluded, _, sparse_reproj_depth, _, _ = track_points_sparse(
         data["object_coordinates"],
@@ -1425,8 +1427,8 @@ def add_tracks(
 
 
 def create_point_tracking_dataset(
-    raw_dir="./datasets/movif",
-    train_size=(256, 256),
+    raw_dir,
+    train_size,
     shuffle_buffer_size=256,
     split="train",
     batch_dims=tuple(),
@@ -1473,14 +1475,16 @@ def create_point_tracking_dataset(
     Returns:
       The dataset generator.
     """
-
+    print("raw_dir", raw_dir)
+    print("image_size", train_size)
+    dataset_name = os.path.basename(os.path.normpath(raw_dir))
     ds = tfds.load(
-        "movi_a/128x128:1.0.0",
-        data_dir=raw_dir,
+        f"{dataset_name}/{train_size[0]}x{train_size[0]}:1.0.0",
+        data_dir=os.path.dirname(raw_dir),
         shuffle_files=shuffle_buffer_size is not None,
         download=False,
     )
-
+    
     # breakpoint()
     ds = ds[split]
     if repeat:
@@ -1567,12 +1571,11 @@ def plot_tracks(rgb, points, occluded, trackgroup=None):
 
 def get_args_parser():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--raw_dir", type=str, default="./datasets/movi_f/", help="path to raw movif data")
-    parser.add_argument(
-        "--processed_dir", type=str, default="./datasets/kubric_processed_mix_3d/", help="path to processed data"
-    )
+    parser.add_argument("--raw_dir", type=str, default="./datasets/movi_a/", help="path to theraw dataset")
+    parser.add_argument("--image_size", type=int, default=128, help="image size for the dataset")
+    parser.add_argument("--processed_dir", type=str, default="./datasets/kubric_processed_mix_3d/", help="path to processed data directory")
     parser.add_argument("--split", type=str, default="train", choices=["train", "validation"], help="split")
-
+    
     return parser
 
 
@@ -1583,6 +1586,7 @@ def main():
     raw_dir = args.raw_dir
     processed_dir = args.processed_dir
     split = args.split
+    image_size = args.image_size
 
     if split == "validation":
         processed_dir = processed_dir + "_val"
@@ -1590,7 +1594,7 @@ def main():
     ds = tfds.as_numpy(
         create_point_tracking_dataset(
             raw_dir=raw_dir,
-            train_size=(128, 128),
+            train_size=(image_size, image_size),
             shuffle_buffer_size=True,  # FIXME suffle data
             split=split,  # "validation"
             batch_dims=tuple(),
