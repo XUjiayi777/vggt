@@ -153,3 +153,7 @@ datasets/google-cloud-sdk
 
 # Model weights
 weights/
+
+# datasets
+data/kubric/challenges/point_tracking/datasets
+data/kubric/challenges/point_tracking/google-cloud-sdk

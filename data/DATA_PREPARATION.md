@@ -16,11 +16,12 @@ gsutil -m cp -r gs://kubric-public/tfds/movi_f/512x512 ./datasets/movi_f/
 ```bash
 cd data/kubric/challenges/point_tracking
 
-python3 dataset_mix.py --raw_dir ./datasets/movi_f/ --processed_dir ./datasets/kubric_processed_mix_3d --split train
+python3 dataset_mix.py --raw_dir ./datasets/movi_f/  --processed_dir ./datasets/kubric_processed_mix_3d --split train
 
 python3 dataset_mix.py --raw_dir ./datasets/movi_f/ --processed_dir ./datasets/kubric_processed_mix_3d --split validation
 
 ```
+
 
 # EVALUATION DATA PREPARATION
 
