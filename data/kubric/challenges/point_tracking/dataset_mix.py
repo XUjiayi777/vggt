@@ -1282,7 +1282,7 @@ def add_tracks(
         t is time.  Points are in pixel/frame coordinates.
         [num_frames, height, width].
       target_points:
-        The trajectory for each query point, of shape [num_points, num_frames, 3].
+        The trajectory for each query point, of shape [num_points, num_frames, 2].
         Each point is [x, y].  Points are in pixel/frame coordinates.
       occlusion:
         Occlusion flag for each point, of shape [num_points, num_frames].  This is
@@ -1316,7 +1316,7 @@ def add_tracks(
     video = tf.identity(data["video"])
     depth = tf.identity(data["depth"])  # depth_map
 
-    start = tf.tensor_scatter_nd_update([0, 0, 0, 0], [[1], [2]], crop_window[0:2])
+    start = tf.tensor_scatter_nd_update([0, 0, 0, 0], [[1], [2]], crop_window[0:2]) 
     size = tf.tensor_scatter_nd_update(tf.shape(video), [[1], [2]], crop_window[2:4] - crop_window[0:2])
     video = tf.slice(video, start, size)
     video = tf.image.resize(tf.cast(video, tf.float32), train_size)
@@ -1407,7 +1407,7 @@ def add_tracks(
     sparse_reproj_depth.set_shape([tracks_to_sample, num_frames])
 
     res = {
-        "video": video / (255.0 / 2.0) - 1.0,
+        "video": video / (255.0 / 2.0) - 1.0, # S,
         "depth": depth,
         "depth_range": data["metadata"]["depth_range"],
         "query_points": query_points,
@@ -1575,6 +1575,7 @@ def get_args_parser():
     parser.add_argument("--image_size", type=int, default=128, help="image size for the dataset")
     parser.add_argument("--processed_dir", type=str, default="./datasets/kubric_processed_mix_3d/", help="path to processed data directory")
     parser.add_argument("--split", type=str, default="train", choices=["train", "validation"], help="split")
+    parser.add_argument("--process_index", type=int, default=None, help="Index of the dataset to process")
     
     return parser
 
@@ -1587,6 +1588,7 @@ def main():
     processed_dir = args.processed_dir
     split = args.split
     image_size = args.image_size
+    process_index = args.process_index
 
     if split == "validation":
         processed_dir = processed_dir + "_val"
@@ -1612,6 +1614,8 @@ def main():
 
     real_i = 0
     for i, data in enumerate(ds):
+        if process_index is not None and i != process_index:
+            continue  # Skip processing if the index doesn't match
 
         if (data["sparse_target_points"] > 5000).sum() > 0:
             print(f"Skip {i}")
@@ -1663,10 +1667,13 @@ def main():
             "reproj_depth": data["reverse_reproj_depth"].astype(np.float16),
             "visibility": data["reverse_occluded"].astype(bool),
         }
-
+        
         np.save(os.path.join(processed_dir, seq_num, seq_num + ".npy"), traj_annots)
         np.save(os.path.join(processed_dir, seq_num, seq_num + "_dense.npy"), dense_annots)
         np.save(os.path.join(processed_dir, seq_num, seq_num + "_dense_reverse.npy"), dense_reverse_annots)
+
+        if process_index is not None:
+            break  # Stop the loop after processing the specified index
 
         real_i += 1
         if real_i >= 11000:
