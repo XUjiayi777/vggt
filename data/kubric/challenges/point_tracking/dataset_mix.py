@@ -475,10 +475,9 @@ def track_points(
     surface_normals,
     bboxes_3d,
     obj_quat,
-    cam_focal_length,
     cam_positions,
-    cam_quaternions,
-    cam_sensor_width,
+    intrinsics, 
+    matrix_world,
     window,
     tracks_to_sample=256,
     sampling_stride=4,
@@ -502,10 +501,9 @@ def track_points(
       bboxes_3d: The set of all object bounding boxes from Kubric
       obj_quat: Quaternion rotation for each object.  Shape
         [num_objects, num_frames, 4]
-      cam_focal_length: Camera focal length
       cam_positions: Camera positions, with shape [num_frames, 3]
-      cam_quaternions: Camera orientations, with shape [num_frames, 4]
-      cam_sensor_width: Camera sensor width parameter
+      intrinsics: Camera intrinsic parameters, with shape [num_frames, 3, 3]
+      matrix_world: Camera to world matrices, with shape [num_frames, 4, 4]
       window: the window inside which we're sampling points.  Integer valued
         in the format [x_min, y_min, x_max, y_max], where min is inclusive and
         max is exclusive.
@@ -613,14 +611,6 @@ def track_points(
     #     tracks_to_sample,
     # )
     # num_to_sample.set_shape([max_seg_id])
-    intrinsics, matrix_world = get_camera_matrices(
-        cam_focal_length,
-        cam_positions,
-        cam_quaternions,
-        cam_sensor_width,
-        input_size,
-        num_frames=num_frames,
-    )
 
     # If the normal map is very rough, it's often because they come from a normal
     # map rather than the mesh.  These aren't trustworthy, and the normal test
@@ -851,10 +841,9 @@ def track_points_sparse(
     surface_normals,
     bboxes_3d,
     obj_quat,
-    cam_focal_length,
     cam_positions,
-    cam_quaternions,
-    cam_sensor_width,
+    intrinsics, 
+    matrix_world,
     window,
     tracks_to_sample=256,
     sampling_stride=4,
@@ -878,10 +867,9 @@ def track_points_sparse(
       bboxes_3d: The set of all object bounding boxes from Kubric
       obj_quat: Quaternion rotation for each object.  Shape
         [num_objects, num_frames, 4]
-      cam_focal_length: Camera focal length
       cam_positions: Camera positions, with shape [num_frames, 3]
-      cam_quaternions: Camera orientations, with shape [num_frames, 4]
-      cam_sensor_width: Camera sensor width parameter
+      intrinsics: Camera intrinsic parameters, with shape [num_frames, 3, 3]
+      matrix_world: Camera to world matrices, with shape [num_frames, 4, 4]
       window: the window inside which we're sampling points.  Integer valued
         in the format [x_min, y_min, x_max, y_max], where min is inclusive and
         max is exclusive.
@@ -985,15 +973,6 @@ def track_points_sparse(
         tracks_to_sample,
     )
     num_to_sample.set_shape([max_seg_id])
-
-    intrinsics, matrix_world = get_camera_matrices(
-        cam_focal_length,
-        cam_positions,
-        cam_quaternions,
-        cam_sensor_width,
-        input_size,
-        num_frames=num_frames,
-    )
 
     # If the normal map is very rough, it's often because they come from a normal
     # map rather than the mesh.  These aren't trustworthy, and the normal test
@@ -1326,6 +1305,18 @@ def add_tracks(
     depth = tf.slice(depth, start, size_depth)
     depth = tf.image.resize(tf.cast(depth, tf.float32), train_size)
 
+    # Camera parameters
+    input_size = data["object_coordinates"].shape.as_list()[1:3]
+    num_frames = data["object_coordinates"].shape.as_list()[0]
+    intrinsics, camera2world_matrix = get_camera_matrices(
+        data["camera"]["focal_length"],
+        data["camera"]["positions"],
+        data["camera"]["quaternions"],
+        data["camera"]["sensor_width"],
+        input_size,
+        num_frames=num_frames,
+    )
+        
     # NOTE 0-th to last
     query_points, target_points, occluded, relative_depth, reproj_depth, cam_pos, world_pos = track_points(
         data["object_coordinates"],
@@ -1335,10 +1326,9 @@ def add_tracks(
         data["normal"],
         data["instances"]["bboxes_3d"],
         data["instances"]["quaternions"],
-        data["camera"]["focal_length"],
         data["camera"]["positions"],
-        data["camera"]["quaternions"],
-        data["camera"]["sensor_width"],
+        intrinsics, 
+        camera2world_matrix,
         crop_window,
         tracks_to_sample,
         sampling_stride,
@@ -1363,10 +1353,9 @@ def add_tracks(
         data["normal"],
         data["instances"]["bboxes_3d"],
         data["instances"]["quaternions"],
-        data["camera"]["focal_length"],
         data["camera"]["positions"],
-        data["camera"]["quaternions"],
-        data["camera"]["sensor_width"],
+        intrinsics, 
+        camera2world_matrix,
         crop_window,
         tracks_to_sample,
         sampling_stride,
@@ -1389,10 +1378,9 @@ def add_tracks(
         data["normal"],
         data["instances"]["bboxes_3d"],
         data["instances"]["quaternions"],
-        data["camera"]["focal_length"],
         data["camera"]["positions"],
-        data["camera"]["quaternions"],
-        data["camera"]["sensor_width"],
+        intrinsics, 
+        camera2world_matrix,
         crop_window,
         tracks_to_sample,
         sampling_stride,
@@ -1410,6 +1398,8 @@ def add_tracks(
         "video": video / (255.0 / 2.0) - 1.0, # S,H,W,C range:[-1,1]
         "depth": depth,
         "depth_range": data["metadata"]["depth_range"],
+        "intrinsics": intrinsics,
+        "camera2world_matrix": camera2world_matrix,
         "query_points": query_points,
         "target_points": target_points,
         "reproj_depth": reproj_depth,
@@ -1641,19 +1631,24 @@ def main():
         print(f"Processing {real_i}")
         seq_num = "0" * (4 - len(str(real_i))) + str(real_i)
         os.makedirs(os.path.join(processed_dir, seq_num), exist_ok=True)
-        os.makedirs(os.path.join(processed_dir, seq_num, "frames"), exist_ok=True)
+        os.makedirs(os.path.join(processed_dir, seq_num, "video_frames"), exist_ok=True)
         os.makedirs(os.path.join(processed_dir, seq_num, "depths"), exist_ok=True)
 
         for i_frame, frame in enumerate(data["video"]):
             Image.fromarray((((frame + 1) / 2.0) * 255.0).astype("uint8")).save(
-                os.path.join(processed_dir, seq_num, "frames", f"{i_frame:03d}.png")
+                os.path.join(processed_dir, seq_num, "video_frames", f"{i_frame:03d}.png")
             )
 
         for i_frame, depth_frame in enumerate(data["depth"]):
             cv2.imwrite(
                 os.path.join(processed_dir, seq_num, "depths", f"{i_frame:03d}.png"), depth_frame.astype("uint16")
             )
-
+      
+        camera_info = { 
+            "intrinsics": data["intrinsics"].astype(np.float16),
+            "camera2world_matrix": data["camera2world_matrix"].astype(np.float16),
+        }
+        
         traj_annots = {
             "depth_range": data["depth_range"].astype(np.float16),
             "coords": data["sparse_target_points"].astype(np.float16),
@@ -1676,9 +1671,10 @@ def main():
             "visibility": data["reverse_occluded"].astype(bool),
         }
         
-        np.save(os.path.join(processed_dir, seq_num, seq_num + ".npy"), traj_annots)
-        np.save(os.path.join(processed_dir, seq_num, seq_num + "_dense.npy"), dense_annots)
-        np.save(os.path.join(processed_dir, seq_num, seq_num + "_dense_reverse.npy"), dense_reverse_annots)
+        np.save(os.path.join(processed_dir, seq_num, seq_num + "_camera.npy"),camera_info)
+        np.save(os.path.join(processed_dir, seq_num, seq_num + "_sparse_tracking.npy"), traj_annots)
+        np.save(os.path.join(processed_dir, seq_num, seq_num + "_dense_tracking.npy"), dense_annots)
+        np.save(os.path.join(processed_dir, seq_num, seq_num + "_dense_reverse_tracking.npy"), dense_reverse_annots)
 
         processed_indices.add(i)  
 
