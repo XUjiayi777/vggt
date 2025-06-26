@@ -525,7 +525,7 @@ def track_points(
       A set of queries, randomly sampled from the video (with a bias toward
         objects), of shape [num_points, 3].  Each point is [t, y, x], where
         t is time.  All points are in pixel/frame coordinates.
-      The trajectory for each query point, of shape [num_points, num_frames, 3].
+      The trajectory for each query point, of shape [num_points, num_frames, 2].
         Each point is [x, y].  Points are in pixel coordinates
       Occlusion flag for each point, of shape [num_points, num_frames].  This is
         a boolean, where True means the point is occluded.
@@ -547,7 +547,7 @@ def track_points(
     depth_f32 = tf.cast(depth, tf.float32)
     depth_map = depth_min + depth_f32 * (depth_max - depth_min) / np.iinfo(np.uint16).max
 
-    surface_normal_map = surface_normals / np.iinfo(np.uint16).max * 2.0 - 1.0
+    surface_normal_map = surface_normals / np.iinfo(np.uint16).max * 2.0 - 1.0 #[-1,1]
 
     input_size = object_coordinates.shape.as_list()[1:3]
     num_frames = object_coordinates.shape.as_list()[0]
@@ -1407,7 +1407,7 @@ def add_tracks(
     sparse_reproj_depth.set_shape([tracks_to_sample, num_frames])
 
     res = {
-        "video": video / (255.0 / 2.0) - 1.0, # S,
+        "video": video / (255.0 / 2.0) - 1.0, # S,H,W,C range:[-1,1]
         "depth": depth,
         "depth_range": data["metadata"]["depth_range"],
         "query_points": query_points,
@@ -1575,8 +1575,8 @@ def get_args_parser():
     parser.add_argument("--image_size", type=int, default=128, help="image size for the dataset")
     parser.add_argument("--processed_dir", type=str, default="./datasets/kubric_processed_mix_3d/", help="path to processed data directory")
     parser.add_argument("--split", type=str, default="train", choices=["train", "validation"], help="split")
-    parser.add_argument("--process_index", type=int, default=None, help="Index of the dataset to process")
-    
+    parser.add_argument("--process_index",type=str, default=None,
+    help="Index or list of indices of the dataset to process (e.g., '42' or '[42,43,44]')")
     return parser
 
 
@@ -1589,6 +1589,12 @@ def main():
     split = args.split
     image_size = args.image_size
     process_index = args.process_index
+
+    if process_index is not None:
+        if process_index.startswith("[") and process_index.endswith("]"):
+            process_index = list(map(int, process_index[1:-1].split(",")))
+        else:
+            process_index = [int(process_index)] 
 
     if split == "validation":
         processed_dir = processed_dir + "_val"
@@ -1613,9 +1619,11 @@ def main():
     )
 
     real_i = 0
+    processed_indices = set()  
+
     for i, data in enumerate(ds):
-        if process_index is not None and i != process_index:
-            continue  # Skip processing if the index doesn't match
+        if process_index is not None and i not in process_index:
+            continue  
 
         if (data["sparse_target_points"] > 5000).sum() > 0:
             print(f"Skip {i}")
@@ -1672,8 +1680,10 @@ def main():
         np.save(os.path.join(processed_dir, seq_num, seq_num + "_dense.npy"), dense_annots)
         np.save(os.path.join(processed_dir, seq_num, seq_num + "_dense_reverse.npy"), dense_reverse_annots)
 
-        if process_index is not None:
-            break  # Stop the loop after processing the specified index
+        processed_indices.add(i)  
+
+        if process_index is not None and processed_indices == set(process_index):
+            break  
 
         real_i += 1
         if real_i >= 11000:
