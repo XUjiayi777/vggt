@@ -157,4 +157,3 @@ weights/
 # datasets
 data/kubric/challenges/point_tracking/datasets
 data/kubric/challenges/point_tracking/google-cloud-sdk
-data/kubric/challenges/point_tracking/test.ipynb

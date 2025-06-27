@@ -889,9 +889,19 @@ def add_tracks(
     
     # Optical flow
     size_oflow = tf.tensor_scatter_nd_update(tf.shape(data["backward_flow"]), [[1], [2]], crop_window[2:4] - crop_window[0:2])
-    backward_flow = tf.slice(data["backward_flow"], start, size_oflow)
+
+    backward_flow_range = tf.convert_to_tensor(data["metadata"]["backward_flow_range"], dtype=tf.float32)
+    minv_backward, maxv_backward = backward_flow_range[0], backward_flow_range[1]
+
+    forward_flow_range = tf.convert_to_tensor(data["metadata"]["forward_flow_range"], dtype=tf.float32)
+    minv_forward, maxv_forward = forward_flow_range[0], forward_flow_range[1]
+
+    backward_flow = data["backward_flow"] / 65535 * (maxv_backward - minv_backward) + minv_backward
+    backward_flow = tf.slice(backward_flow, start, size_oflow)
     backward_flow = tf.image.resize(tf.cast(backward_flow, tf.float32), train_size)
-    forward_flow = tf.slice(data["forward_flow"], start, size_oflow)
+
+    forward_flow = data["forward_flow"] / 65535 * (maxv_forward - minv_forward) + minv_forward
+    forward_flow = tf.slice(forward_flow, start, size_oflow)
     forward_flow = tf.image.resize(tf.cast(forward_flow, tf.float32), train_size)
 
     # Camera parameters
@@ -1235,6 +1245,7 @@ def main():
             cv2.imwrite(
                 os.path.join(processed_dir, seq_num, "depths", f"{i_frame:03d}.png"), depth_frame.astype("uint16")
             )
+            
         optical_flow_info = {
             "backward_flow": data["backward_flow"],
             "forward_flow": data["forward_flow"],
