@@ -499,7 +499,7 @@ def track_points(
         [num_frames, height, width]
       surface_normals: uint16 surface normal map. Shape
         [num_frames, height, width, 3]
-      bboxes_3d: The set of all object bounding boxes from Kubric
+      bboxes_3d: The set of all object bounding boxes from Kubric [num_objects, num_frames, num_corners, 3]
       obj_quat: Quaternion rotation for each object.  Shape
         [num_objects, num_frames, 4]
       cam_positions: Camera positions, with shape [num_frames, 3]
@@ -581,7 +581,12 @@ def track_points(
             tracks_to_sample,
         )
         num_to_sample.set_shape([max_seg_id])
-
+        
+    # If the normal map is very rough, it's often because they come from a normal
+    # map rather than the mesh.  These aren't trustworthy, and the normal test
+    # may fail (i.e. the normal is pointing away from the camera even though the
+    # point is still visible).  So don't use the normal test when inferring
+    # occlusion.
     trust_sn = True
     sn_pad = tf.pad(surface_normal_map, [(0, 0), (1, 1), (1, 1), (0, 0)])
     shp = surface_normal_map.shape
@@ -613,9 +618,11 @@ def track_points(
         if not sparse_sampling:
             mask = tf.math.logical_and(mask, tf.equal(pix_coords[:, 0], query_frame))
 
+        pt_coords = tf.boolean_mask(pix_coords, mask)
         pt = tf.boolean_mask(tf.reshape(object_coordinates_box, [-1, 3]), mask)
         normals = tf.boolean_mask(tf.reshape(surface_normals_box, [-1, 3]), mask)
         trust_sn_mask = tf.boolean_mask(tf.reshape(trust_sn_box, [-1, 1]), mask)
+        trust_sn_gather = trust_sn_mask
 
         if sparse_sampling:
             idx = tf.cond(
@@ -629,11 +636,12 @@ def track_points(
             pt = tf.gather(pt, idx)
             normals = tf.gather(normals, idx)
             trust_sn_gather = tf.gather(trust_sn_mask, idx)
-        else:
-            pt_coords = tf.boolean_mask(pix_coords, mask)
-            trust_sn_gather = trust_sn_mask
+
 
         if obj_id == -1:
+            # For the background object, no bounding box is available.  However,
+            # this doesn't move, so we use the depth map to backproject these points
+            # into 3D and use those positions throughout the video.
             pt_3d = []
             pt_coords_reorder = []
             for fr in range(num_frames):
@@ -646,10 +654,11 @@ def track_points(
             quat = None
             frame_for_pt = None
         else:
-            pt = pt / np.iinfo(np.uint16).max - 0.5
+            # For any other object, we just use the point coordinates supplied by kubric.
+            pt = pt / np.iinfo(np.uint16).max - 0.5 
             chosen_points.append(pt_coords)
-            bbox = tf.cond(obj_id >= tf.shape(bboxes_3d)[0], lambda: bboxes_3d[0, :], lambda: bboxes_3d[obj_id, :])
-            quat = tf.cond(obj_id >= tf.shape(obj_quat)[0], lambda: obj_quat[0, :], lambda: obj_quat[obj_id, :])
+            bbox = tf.cond(obj_id >= tf.shape(bboxes_3d)[0], lambda: bboxes_3d[0, :], lambda: bboxes_3d[obj_id, :]) # bboxes_3d [num_objects, num_frames, num_corners, 3]
+            quat = tf.cond(obj_id >= tf.shape(obj_quat)[0], lambda: obj_quat[0, :], lambda: obj_quat[obj_id, :]) # obj_quat [num_objects, num_frames, 4]
             frame_for_pt = pt_coords[..., 0]
 
         pt_depth = []
@@ -659,12 +668,13 @@ def track_points(
             idx = pt_coords_chunk[:, 1] * shp[1] + pt_coords_chunk[:, 2]
             pt_depth.append(tf.gather(tf.reshape(depth_map[fr], [-1]), idx))
         chosen_points_depth.append(tf.concat(pt_depth, axis=0))
-
+        
+        # Finally, compute the reprojections for this particular object.
         obj_reproj, obj_occ, reproj_depth, obj_cam_pos, obj_world_pos = tf.cond(
             tf.shape(pt)[0] > 0,
             functools.partial(
-                single_object_reproject,
-                bbox_3d=bbox,
+                single_object_reproject, 
+                bbox_3d=bbox,  # bboxes_3d [1, num_frames, num_corners, 3]
                 pt=pt,
                 pt_segments=i,
                 camera=get_camera(),
@@ -693,23 +703,28 @@ def track_points(
         all_reproj_depth.append(reproj_depth)
         all_cam_pos.append(obj_cam_pos)
         all_world_pos.append(obj_world_pos)
-
+        
+    # Points are currently in pixel coordinates of the original video.  We now
+    # convert them to coordinates within the window frame, and rescale to
+    # pixel coordinates.  Note that this produces the pixel coordinates after
+    # the window gets cropped and rescaled to the full image size.
     wd = tf.concat([np.array([0.0]), window[0:2], np.array([num_frames]), window[2:4]], axis=0)
     wd = wd[tf.newaxis, tf.newaxis, :]
     coord_multiplier = [num_frames, input_size[0], input_size[1]]
-    all_reproj = tf.concat(all_reproj, axis=0)
-
+    all_reproj = tf.concat(all_reproj, axis=0) 
+    
+    # We need to extract x,y, but the format of the window is [t1,y1,x1,t2,y2,x2]
     window_size = wd[:, :, 5:3:-1] - wd[:, :, 2:0:-1]
     window_top_left = wd[:, :, 2:0:-1]
 
     all_reproj = (all_reproj - window_top_left) / window_size
     all_reproj = all_reproj * coord_multiplier[2:0:-1]
-    all_occ = tf.concat(all_occ, axis=0)
+    all_occ = tf.concat(all_occ, axis=0) 
     chosen_points_depth = tf.concat(chosen_points_depth, axis=0)
     all_reproj_depth = tf.concat(all_reproj_depth, axis=0)
 
-    all_cam_pos = tf.concat(all_cam_pos, axis=0)
-    all_world_pos = tf.concat(all_world_pos, axis=0)
+    all_cam_pos = tf.concat(all_cam_pos, axis=0) 
+    all_world_pos = tf.concat(all_world_pos, axis=0) 
 
     chosen_points = tf.concat(chosen_points, axis=0)
 
@@ -747,16 +762,16 @@ def track_points(
     chosen_points = (chosen_points - wd[:, 0, :3]) / (wd[:, 0, 3:] - wd[:, 0, :3])
     chosen_points = chosen_points * coord_multiplier
 
-    all_relative_depth = all_reproj_depth / chosen_points_depth[..., tf.newaxis]
+    all_relative_depth = all_reproj_depth / chosen_points_depth[..., tf.newaxis] # [num_points, num_frames]/[num_points,1]
 
     return (
-        tf.cast(chosen_points, tf.float32),
-        tf.cast(all_reproj, tf.float32),
-        all_occ,
-        all_relative_depth,
-        all_reproj_depth,
-        all_cam_pos,
-        all_world_pos,
+        tf.cast(chosen_points, tf.float32),# [num_points, (t,y,x)]
+        tf.cast(all_reproj, tf.float32), #[num_points, num_frames, 2]
+        all_occ, #[num_points, num_frames]
+        all_relative_depth, # [num_points, num_frames]
+        all_reproj_depth, # [num_points, num_frames]
+        all_cam_pos, # [num_points, num_frames, 3]
+        all_world_pos, # [num_points, num_frames, 3]
     )
 
 
@@ -1044,8 +1059,6 @@ def create_point_tracking_dataset(
     Returns:
       The dataset generator.
     """
-    print("raw_dir", raw_dir)
-    print("image_size", train_size)
     dataset_name = os.path.basename(os.path.normpath(raw_dir))
     ds = tfds.load(
         f"{dataset_name}/{train_size[0]}x{train_size[0]}:1.0.0",
