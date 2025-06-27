@@ -7,8 +7,8 @@ We use [Kubric](https://github.com/google-research/kubric) as our training data
 2. Download raw data from [GCD](https://console.cloud.google.com/storage/browser/kubric-public/tfds/movi_f/512x512?pageState=(%22StorageObjectListTable%22:(%22f%22:%22%255B%255D%22)))
 
 ```bash
-mkdir -p datasets/movi_f/
-gsutil -m cp -r gs://kubric-public/tfds/movi_f/512x512 ./datasets/movi_f/
+mkdir -p datasets/movi_a/
+gsutil -m cp -r gs://kubric-public/tfds/movi_a/128x128 ./datasets/movi_a/
 ```
 
 3. Generate dense 3D annotations
@@ -16,9 +16,9 @@ gsutil -m cp -r gs://kubric-public/tfds/movi_f/512x512 ./datasets/movi_f/
 ```bash
 cd data/kubric/challenges/point_tracking
 
-python3 dataset_mix.py --raw_dir ./datasets/movi_f/  --processed_dir ./datasets/kubric_processed_mix_3d --split train
+python dataset_mix.py --raw_dir ./datasets/movi_a/  --image_size 128 --processed_dir ./datasets/movi_a/kubric_128x128_processed_mix_3 --split train --process_index 0
 
-python3 dataset_mix.py --raw_dir ./datasets/movi_f/ --processed_dir ./datasets/kubric_processed_mix_3d --split validation
+python dataset_mix.py --raw_dir ./datasets/movi_a/  --image_size 128 --processed_dir ./datasets/movi_a/kubric_128x128_processed_mix_3 --split validation --process_index 0
 
 ```
 
