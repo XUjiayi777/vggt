@@ -104,27 +104,22 @@ def calculate_auc_np(r_error, t_error, max_threshold=30):
     histogram, _ = np.histogram(max_errors, bins=bins)
     num_pairs = float(len(max_errors))
     normalized_histogram = histogram.astype(float) / num_pairs
+
     return np.mean(np.cumsum(normalized_histogram)), normalized_histogram
 
-def ned_to_opencv_pose(pose_line):
-    if not isinstance(pose_line, torch.Tensor):
-        pose_line = torch.from_numpy(pose_line).float()
-    
-    t = pose_line[0:3]  # translation vector 
-    q = pose_line[3:7]  # quaternion 
-    
-    R = quat_to_mat(q) 
-    C = torch.tensor([[0, 1, 0],
-                      [0, 0, 1],
-                      [1, 0, 0]], dtype=torch.float32)
-    
-    R_opencv = C @ R @ C.T
-    t_opencv = C @ t
-    
-    t_camera = -R_opencv @ t_opencv
-    extrinsic = torch.cat((R_opencv, t_camera.unsqueeze(1)), dim=1)  # shape (3,4)
- 
-    return extrinsic
+def xyzqxqyqxqw_to_c2w(xyzqxqyqxqw):
+    xyzqxqyqxqw = np.array(xyzqxqyqxqw, dtype=np.float32)
+    #NOTE: we need to convert x_y_z coordinate system to z_x_y coordinate system
+    z, x, y = xyzqxqyqxqw[:3]
+    qz, qx, qy, qw = xyzqxqyqxqw[3:]
+    c2w = np.eye(4)
+    c2w[:3, :3] = np.array([
+        [1 - 2*qy*qy - 2*qz*qz, 2*qx*qy - 2*qz*qw, 2*qx*qz + 2*qy*qw],
+        [2*qx*qy + 2*qz*qw, 1 - 2*qx*qx - 2*qz*qz, 2*qy*qz - 2*qx*qw],
+        [2*qx*qz - 2*qy*qw, 2*qy*qz + 2*qx*qw, 1 - 2*qx*qx - 2*qy*qy]
+    ])
+    c2w[:3, 3] = np.array([x, y, z])
+    return c2w
 
 def rotation_angle(rot_gt, rot_pred, batch_size=None, eps=1e-15):
     """
@@ -246,9 +241,10 @@ def se3_to_relative_pose_error(pred_se3, gt_se3, num_frames):
     rel_tangle_deg = translation_angle(
         relative_pose_gt[:, :3, 3], relative_pose_pred[:, :3, 3]
     )
-
+    # print("Relative rotation error:", rel_rangle_deg)
+    # print("Relative translation error:", rel_tangle_deg)
     return rel_rangle_deg, rel_tangle_deg
-def process_sequence(model, images, use_ba, num_frames, device, dtype, gt_extrinsic):
+def process_sequence(model, images, num_frames, use_ba, device, dtype, gt_extrinsic):
     """
     Process a single sequence and compute pose errors.
 
@@ -272,18 +268,17 @@ def process_sequence(model, images, use_ba, num_frames, device, dtype, gt_extrin
     print(predictions.keys())
     with torch.cuda.amp.autocast(dtype=torch.float64):
         extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
-        pred_extrinsic = extrinsic[0] # Predicted extrinsic
+        pred_extrinsic = extrinsic[0] # Predicted extrinsic c2w
         gt_extrinsic = torch.from_numpy(gt_extrinsic).to(device)
         
         add_row = torch.tensor([0, 0, 0, 1], device=device).expand(pred_extrinsic.size(0), 1, 4)
         pred_se3 = torch.cat((pred_extrinsic, add_row), dim=1)
-        gt_se3 = torch.cat((gt_extrinsic, add_row), dim=1)
+        gt_se3 = torch.linalg.inv(gt_extrinsic)
         
         # Set the coordinate of the first camera as the coordinate of the world
         # NOTE: DO NOT REMOVE THIS UNLESS YOU KNOW WHAT YOU ARE DOING
         pred_se3 = align_to_first_camera(pred_se3)
         gt_se3 = align_to_first_camera(gt_se3)
-        
         
         rel_rangle_deg, rel_tangle_deg = se3_to_relative_pose_error(pred_se3, gt_se3, num_frames)
 
@@ -321,8 +316,8 @@ def main():
     pose_path = os.path.join(args.TAir_dir, f"pose_{args.camera}.txt")
     pose=np.loadtxt(pose_path)
     pose=pose[:args.num_frames]
-    extrinsic_list=[ned_to_opencv_pose(pose_line) for pose_line in pose]
-    extrinsics = np.array(extrinsic_list)
+    extrinsic_list=[xyzqxqyqxqw_to_c2w(pose_line) for pose_line in pose]
+    extrinsic = np.array(extrinsic_list)
     
     # Load model
     print("Loading model...")
@@ -332,7 +327,7 @@ def main():
     set_random_seeds(args.seed)
         
     # Calculate pose errors
-    rError, tError = process_sequence(model, images, args.num_frames ,args.use_ba, device, dtype, extrinsics)
+    rError, tError = process_sequence(model, images, args.num_frames ,args.use_ba, device, dtype, extrinsic)
     
     Auc_30, _ = calculate_auc_np(rError, tError, max_threshold=30)
     Auc_15, _ = calculate_auc_np(rError, tError, max_threshold=15)
@@ -340,12 +335,6 @@ def main():
     Auc_3, _ = calculate_auc_np(rError, tError, max_threshold=3)
     
     print("="*80)
-    # Print results with colors
-    GREEN = "\033[92m"
-    RED = "\033[91m"
-    BLUE = "\033[94m"
-    BOLD = "\033[1m"
-    RESET = "\033[0m"
 
     # Print summary results
     print("\nSummary of AUC results:")
