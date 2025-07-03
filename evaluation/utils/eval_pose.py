@@ -3,6 +3,9 @@ import numpy as np
 from vggt.utils.geometry import closed_form_inverse_se3
 from vggt.utils.rotation import mat_to_quat
 
+
+
+
 def se3_to_relative_pose_error(pred_se3, gt_se3, num_frames):
     """
     Compute rotation and translation errors between predicted and ground truth poses.

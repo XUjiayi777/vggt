@@ -8,7 +8,7 @@ import warnings
 from vggt.utils.load_fn import load_and_preprocess_images, preprocess_depth_maps
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from utils.eval_pose import se3_to_relative_pose_error,align_to_first_camera,calculate_auc_np
-from utils.eval_depth import thresh_inliers,m_rel_ae,pointwise_rel_ae
+from utils.eval_depth import thresh_inliers,m_rel_ae,pointwise_rel_ae,align_pred_to_gt
 from utils.general import set_random_seeds,load_model
 from ba import run_vggt_with_ba
 import argparse
@@ -117,15 +117,14 @@ def main():
     pose=np.loadtxt(pose_path)
     pose=pose[:args.num_frames]
     extrinsic_list=[ned_to_c2w(pose_line) for pose_line in pose]
-    extrinsic = np.array(extrinsic_list)
+    gt_extrinsic = np.array(extrinsic_list)
     
     # Depth processing
     print("Processing depth maps...")
     depth_path = os.path.join(args.TAir_dir, f"depth_{args.camera}")
     depths_name = sorted(os.listdir(depth_path))[:args.num_frames]
-    print(depths_name)
     depths_list = [np.load(os.path.join(depth_path, f)) for f in depths_name]
-    gt_depth=preprocess_depth_maps(depths_list).squeeze(1).numpy()
+    gt_depths=preprocess_depth_maps(depths_list).squeeze()
 
     # Load model
     print("Loading model...")
@@ -140,19 +139,19 @@ def main():
             predictions = model(images)
 
     # Camera pose estimation (AUC)
-    rError, tError = estimate_camera_pose(predictions, images, args.num_frames ,args.use_ba, device, extrinsic)
+    rError, tError = estimate_camera_pose(predictions, images, args.num_frames ,args.use_ba, device, gt_extrinsic)
     
     Auc_30, _ = calculate_auc_np(rError, tError, max_threshold=30)
     Auc_15, _ = calculate_auc_np(rError, tError, max_threshold=15)
     Auc_5, _ = calculate_auc_np(rError, tError, max_threshold=5)
     Auc_3, _ = calculate_auc_np(rError, tError, max_threshold=3)
     
-    # os.makedirs(os.path.dirname(args.log_file_path), exist_ok=True)
-    # with open(args.log_file_path, 'a') as log_file:
-    #     log_file.write("="*80)
-    #     log_file.write("\nSummary of AUC results:\n")
-    #     log_file.write("-" * 50 + "\n")
-    #     log_file.write(f"AUC: {Auc_30:.4f} (AUC@30), {Auc_15:.4f} (AUC@15), {Auc_5:.4f} (AUC@5), {Auc_3:.4f} (AUC@3)\n")
+    os.makedirs(os.path.dirname(args.log_file_path), exist_ok=True)
+    with open(args.log_file_path, 'a') as log_file:
+        log_file.write("="*80)
+        log_file.write("\nSummary of AUC results:\n")
+        log_file.write("-" * 50 + "\n")
+        log_file.write(f"AUC: {Auc_30:.4f} (AUC@30), {Auc_15:.4f} (AUC@15), {Auc_5:.4f} (AUC@5), {Auc_3:.4f} (AUC@3)\n")
     
     print("="*80)
     # Print summary results
@@ -161,16 +160,47 @@ def main():
     print(f"AUC: {Auc_30:.4f} (AUC@30), {Auc_15:.4f} (AUC@15), {Auc_5:.4f} (AUC@5), {Auc_3:.4f} (AUC@3)")
     
     # Depth estimation:
-    pre_depth, pre_depth_conf = predictions['depth'].squeeze(0).squeeze(-1).cpu().numpy(), predictions['depth_conf'].squeeze(0).cpu().numpy()
-    depth_mask=pre_depth_conf>10
+    pre_depths = predictions['depth'].squeeze().cpu().numpy()
     
-    print("pre_depth",pre_depth.shape)
-    print("gt_depth",gt_depth.shape)
-    print("pre_depth_conf",pre_depth_conf.shape)
-    pdb.set_trace()
-    inlier_ratio=thresh_inliers(gt_depth,pre_depth, 1.03, mask=pre_depth_conf,output_scaling_factor=100)
+    # predictions.keys(): ['pose_enc', 'depth', 'depth_conf', 'world_points', 'world_points_conf', 'images']
+    # print("pre_depths",pre_depths.shape, type(pre_depths))
+    # print("gt_depth",gt_depths.shape, type(gt_depths))
+    # print("pre_depth_conf",pre_depth_conf.shape, type(pre_depth_conf))
+    
+    valid_mask = torch.logical_and(
+    gt_depths.cpu() > 1e-3,     # filter out black background
+    predictions['depth_conf'].cpu() > 10
+    ).squeeze().numpy()
+    gt_depths= gt_depths.cpu().numpy()
+    
+    align_pred_depths=[]
+    # print(valid_mask.shape)
+    for i in range(args.num_frames):  
+        valid_mask_idx = valid_mask[i]  
+        scale, shift, aligned_pred_depth = align_pred_to_gt(
+            pre_depths[i], 
+            gt_depths[i],
+            valid_mask_idx
+        )
+        align_pred_depths.append(aligned_pred_depth)
+    align_pred_depths=np.array(align_pred_depths)
+    
+    inlier_ratio=thresh_inliers(gt_depths,align_pred_depths, 1.03, mask=valid_mask,output_scaling_factor=100)
+    mean_rel=m_rel_ae(gt_depths,align_pred_depths,mask=valid_mask,output_scaling_factor=100)
+    
+    
+    with open(args.log_file_path, 'a') as log_file:
+        log_file.write("="*80)
+        log_file.write("\nSummary of depth estimation results:\n")
+        log_file.write("-" * 50 + "\n")
+        log_file.write(f"inlier_ratio:{inlier_ratio} \n")
+        log_file.write(f"mean_rel{mean_rel}")
+        
+    print("="*80)
+    # Print summary results
+    print("\nSummary of depth estimation results:")
+    print("-"*50)
     print("inlier_ratio",inlier_ratio)
-    mean_rel=m_rel_ae(gt_depth,pre_depth,mask=pre_depth_conf,output_scaling_factor=100)
     print("m_rel_ae",mean_rel)
     
     
