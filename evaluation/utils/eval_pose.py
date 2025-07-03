@@ -2,8 +2,47 @@ import torch
 import numpy as np
 from vggt.utils.geometry import closed_form_inverse_se3
 from vggt.utils.rotation import mat_to_quat
+from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+def estimate_camera_pose(predictions, images, num_frames, use_ba, device, gt_extrinsic):
+    """
+    Process a single sequence and compute pose errors.
 
+    Args:
+        predictions: VGGT predictions
+        images: Batched tensor of preprocessed images with shape (N, 3, H, W)
+        num_frames: Number of frames to sample
+        use_ba: Whether to use bundle adjustment
+        device: Device to run on
+        gt_extrinsic: Ground truth extrinsics
 
+    Returns:
+        rError: Rotation errors
+        tError: Translation errors
+    """
+
+    with torch.cuda.amp.autocast(dtype=torch.float64):
+        extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
+        pred_extrinsic = extrinsic[0] # Predicted extrinsic w2c
+        gt_extrinsic = torch.from_numpy(gt_extrinsic).to(device)
+        
+        add_row = torch.tensor([0, 0, 0, 1], device=device).expand(pred_extrinsic.size(0), 1, 4)
+        pred_se3 = torch.cat((pred_extrinsic, add_row), dim=1) #w2c
+        gt_se3 = torch.linalg.inv(gt_extrinsic) # w2c
+        
+        # Set the coordinate of the first camera as the coordinate of the world
+        # NOTE: DO NOT REMOVE THIS UNLESS YOU KNOW WHAT YOU ARE DOING
+        pred_se3 = align_to_first_camera(pred_se3)
+        gt_se3 = align_to_first_camera(gt_se3)
+        
+        rel_rangle_deg, rel_tangle_deg = se3_to_relative_pose_error(pred_se3, gt_se3, num_frames)
+
+        Racc_5 = (rel_rangle_deg < 5).float().mean().item()
+        Tacc_5 = (rel_tangle_deg < 5).float().mean().item()
+
+        print(f"R_ACC@5: {Racc_5:.4f}")
+        print(f"T_ACC@5: {Tacc_5:.4f}")
+
+        return rel_rangle_deg.cpu().numpy(), rel_tangle_deg.cpu().numpy()
 
 
 def se3_to_relative_pose_error(pred_se3, gt_se3, num_frames):

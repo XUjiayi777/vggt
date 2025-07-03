@@ -6,12 +6,13 @@ import json
 import logging
 import warnings
 from vggt.utils.load_fn import load_and_preprocess_images, preprocess_depth_maps
-from vggt.utils.pose_enc import pose_encoding_to_extri_intri
-from utils.eval_pose import se3_to_relative_pose_error,align_to_first_camera,calculate_auc_np
+
+from utils.eval_pose import estimate_camera_pose,calculate_auc_np
 from utils.eval_depth import thresh_inliers,m_rel_ae,pointwise_rel_ae,align_pred_to_gt
 from utils.general import set_random_seeds,load_model
 from ba import run_vggt_with_ba
 import argparse
+import random
 import pdb
 
 # Suppress DINO v2 logs
@@ -50,46 +51,7 @@ def ned_to_c2w(ned):
     c2w[:3, 3] = np.array([x, y, z])
     return c2w
 
-def estimate_camera_pose(predictions, images, num_frames, use_ba, device, gt_extrinsic):
-    """
-    Process a single sequence and compute pose errors.
 
-    Args:
-        predictions: VGGT predictions
-        images: Batched tensor of preprocessed images with shape (N, 3, H, W)
-        num_frames: Number of frames to sample
-        use_ba: Whether to use bundle adjustment
-        device: Device to run on
-        gt_extrinsic: Ground truth extrinsics
-
-    Returns:
-        rError: Rotation errors
-        tError: Translation errors
-    """
-
-    with torch.cuda.amp.autocast(dtype=torch.float64):
-        extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
-        pred_extrinsic = extrinsic[0] # Predicted extrinsic w2c
-        gt_extrinsic = torch.from_numpy(gt_extrinsic).to(device)
-        
-        add_row = torch.tensor([0, 0, 0, 1], device=device).expand(pred_extrinsic.size(0), 1, 4)
-        pred_se3 = torch.cat((pred_extrinsic, add_row), dim=1) #w2c
-        gt_se3 = torch.linalg.inv(gt_extrinsic) # w2c
-        
-        # Set the coordinate of the first camera as the coordinate of the world
-        # NOTE: DO NOT REMOVE THIS UNLESS YOU KNOW WHAT YOU ARE DOING
-        pred_se3 = align_to_first_camera(pred_se3)
-        gt_se3 = align_to_first_camera(gt_se3)
-        
-        rel_rangle_deg, rel_tangle_deg = se3_to_relative_pose_error(pred_se3, gt_se3, num_frames)
-
-        Racc_5 = (rel_rangle_deg < 5).float().mean().item()
-        Tacc_5 = (rel_tangle_deg < 5).float().mean().item()
-
-        print(f"R_ACC@5: {Racc_5:.4f}")
-        print(f"T_ACC@5: {Tacc_5:.4f}")
-
-        return rel_rangle_deg.cpu().numpy(), rel_tangle_deg.cpu().numpy()
     
 def main():
     """Main function to evaluate VGGT on TartanAir dataset."""
@@ -103,28 +65,36 @@ def main():
     # Image processing
     print("Processing images...")
     image_path = os.path.join(args.TAir_dir, f"image_{args.camera}")
-    image_names=[]
-    for image in os.listdir(image_path):
-        image_names.append(os.path.join(image_path, image)) 
-    image_names=sorted(image_names)
-    if len(image_names) >= args.num_frames:
-        image_names = image_names[:args.num_frames]    
-    images = load_and_preprocess_images(image_names).to(device)
+    image_names = sorted([
+        os.path.join(image_path, fname)
+        for fname in os.listdir(image_path)
+        if fname.lower().endswith((".jpg", ".png"))
+    ])
+
+    # Random sampling
+    assert len(image_names) >= args.num_frames, "Not enough frames to sample"
+    sample_indices = sorted(random.sample(range(len(image_names)), args.num_frames))
+    print("Number of sampled frames:", args.num_frames)
+    print("Sample indices:",sample_indices)
+    sample_image_names = [image_names[i] for i in sample_indices]
+    images = load_and_preprocess_images(sample_image_names).to(device)
 
     # Pose processing
     print("Processing poses...")
     pose_path = os.path.join(args.TAir_dir, f"pose_{args.camera}.txt")
     pose=np.loadtxt(pose_path)
-    pose=pose[:args.num_frames]
-    extrinsic_list=[ned_to_c2w(pose_line) for pose_line in pose]
-    gt_extrinsic = np.array(extrinsic_list)
+    sample_extrinsic = [ned_to_c2w(pose[i]) for i in sample_indices]
+    gt_extrinsic = np.array(sample_extrinsic)
     
     # Depth processing
     print("Processing depth maps...")
     depth_path = os.path.join(args.TAir_dir, f"depth_{args.camera}")
-    depths_name = sorted(os.listdir(depth_path))[:args.num_frames]
-    depths_list = [np.load(os.path.join(depth_path, f)) for f in depths_name]
-    gt_depths=preprocess_depth_maps(depths_list).squeeze()
+    depth_names = sorted([
+        os.path.join(depth_path, depth)
+        for depth in os.listdir(depth_path)
+    ])
+    sample_depth = [np.load(depth_names[i]) for i in sample_indices]
+    gt_depths=preprocess_depth_maps(sample_depth).squeeze()
 
     # Load model
     print("Loading model...")
@@ -193,8 +163,8 @@ def main():
         log_file.write("="*80)
         log_file.write("\nSummary of depth estimation results:\n")
         log_file.write("-" * 50 + "\n")
-        log_file.write(f"inlier_ratio:{inlier_ratio} \n")
-        log_file.write(f"mean_rel{mean_rel}")
+        log_file.write(f"inlier_ratio:{inlier_ratio:.4f} \n")
+        log_file.write(f"mean_rel{mean_rel:.4f}")
         
     print("="*80)
     # Print summary results
@@ -206,12 +176,16 @@ def main():
     
 if __name__ == "__main__":
     main()
+    
+
 '''
+Example:
  python test_TartanAir.py \
     --model_path ../weights/model_tracker_fixed_e20.pt \
     --TAir_dir ../data/TartanAir_ocean/P006/ \
+    --log_file_path ../logs/log_tartanair_ocean.txt \
     --num_frames 20 \
     --seed 77 \
-    --cuda_id 4 \
+    --cuda_id 7 \
     --camera left 
 '''
