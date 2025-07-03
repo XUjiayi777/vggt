@@ -5,9 +5,10 @@ import gzip
 import json
 import logging
 import warnings
-from vggt.utils.load_fn import load_and_preprocess_images
+from vggt.utils.load_fn import load_and_preprocess_images, preprocess_depth_maps
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from utils.eval_pose import se3_to_relative_pose_error,align_to_first_camera,calculate_auc_np
+from utils.eval_depth import thresh_inliers,m_rel_ae,pointwise_rel_ae
 from utils.general import set_random_seeds,load_model
 from ba import run_vggt_with_ba
 import argparse
@@ -121,12 +122,11 @@ def main():
     # Depth processing
     print("Processing depth maps...")
     depth_path = os.path.join(args.TAir_dir, f"depth_{args.camera}")
-    depths=[]
-    for depth in os.listdir(depth_path):
-        depths.append(np.load(os.path.join(depth_path, depth)))
-    depths=np.array(depths)
-    depths=depths[:args.num_frames]
-    
+    depths_name = sorted(os.listdir(depth_path))[:args.num_frames]
+    print(depths_name)
+    depths_list = [np.load(os.path.join(depth_path, f)) for f in depths_name]
+    gt_depth=preprocess_depth_maps(depths_list).squeeze(1).numpy()
+
     # Load model
     print("Loading model...")
     model = load_model(device, model_path=args.model_path)
@@ -147,12 +147,12 @@ def main():
     Auc_5, _ = calculate_auc_np(rError, tError, max_threshold=5)
     Auc_3, _ = calculate_auc_np(rError, tError, max_threshold=3)
     
-    os.makedirs(os.path.dirname(args.log_file_path), exist_ok=True)
-    with open(args.log_file_path, 'a') as log_file:
-        log_file.write("="*80)
-        log_file.write("\nSummary of AUC results:\n")
-        log_file.write("-" * 50 + "\n")
-        log_file.write(f"AUC: {Auc_30:.4f} (AUC@30), {Auc_15:.4f} (AUC@15), {Auc_5:.4f} (AUC@5), {Auc_3:.4f} (AUC@3)\n")
+    # os.makedirs(os.path.dirname(args.log_file_path), exist_ok=True)
+    # with open(args.log_file_path, 'a') as log_file:
+    #     log_file.write("="*80)
+    #     log_file.write("\nSummary of AUC results:\n")
+    #     log_file.write("-" * 50 + "\n")
+    #     log_file.write(f"AUC: {Auc_30:.4f} (AUC@30), {Auc_15:.4f} (AUC@15), {Auc_5:.4f} (AUC@5), {Auc_3:.4f} (AUC@3)\n")
     
     print("="*80)
     # Print summary results
@@ -160,7 +160,18 @@ def main():
     print("-"*50)
     print(f"AUC: {Auc_30:.4f} (AUC@30), {Auc_15:.4f} (AUC@15), {Auc_5:.4f} (AUC@5), {Auc_3:.4f} (AUC@3)")
     
-
+    # Depth estimation:
+    pre_depth, pre_depth_conf = predictions['depth'].squeeze(0).squeeze(-1).cpu().numpy(), predictions['depth_conf'].squeeze(0).cpu().numpy()
+    depth_mask=pre_depth_conf>10
+    
+    print("pre_depth",pre_depth.shape)
+    print("gt_depth",gt_depth.shape)
+    print("pre_depth_conf",pre_depth_conf.shape)
+    pdb.set_trace()
+    inlier_ratio=thresh_inliers(gt_depth,pre_depth, 1.03, mask=pre_depth_conf,output_scaling_factor=100)
+    print("inlier_ratio",inlier_ratio)
+    mean_rel=m_rel_ae(gt_depth,pre_depth,mask=pre_depth_conf,output_scaling_factor=100)
+    print("m_rel_ae",mean_rel)
     
     
 if __name__ == "__main__":
