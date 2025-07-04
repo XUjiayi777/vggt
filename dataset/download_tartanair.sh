@@ -1,7 +1,7 @@
-TARGET_DIR="../data/TartanAir"
+TARGET_DIR="../data/TartanAir_v1"
 mkdir -p "$TARGET_DIR"
 
-python download_tartanair.py --output-dir $TARGET_DIR --rgb --only-left --depth --only-easy
+python download_tartanair.py --output-dir $TARGET_DIR --rgb --depth --only-left  
 
 # Find and unzip all zip files
 find "$TARGET_DIR" -type f -name "*.zip" -print0 | while IFS= read -r -d '' zipfile; do

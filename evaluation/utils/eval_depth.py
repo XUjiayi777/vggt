@@ -32,6 +32,7 @@ def align_pred_to_gt(
                                                applying scale and shift. (Original pred_depth
                                                if alignment failed)
     """
+    exclude = False
     if pred_depth.shape != gt_depth.shape:
         raise ValueError(
             f"Predicted depth shape {pred_depth.shape} must match GT depth shape {gt_depth.shape}"
@@ -46,6 +47,7 @@ def align_pred_to_gt(
             f"Warning: Not enough valid pixels ({len(gt_masked)} < {min_valid_pixels}) to align. "
             "Using all pixels."
         )
+        exclude = True
         gt_masked = gt_depth.reshape(-1)
         pred_masked = pred_depth.reshape(-1)
 
@@ -69,7 +71,7 @@ def align_pred_to_gt(
 
 
     aligned_pred_depth = scale * pred_depth + shift
-    return scale, shift, aligned_pred_depth
+    return scale, shift, aligned_pred_depth, exclude
 
     # valid_mask = torch.logical_and(
     #     gt_depth.squeeze().cpu() > 1e-3,     # filter out black background
