@@ -258,9 +258,9 @@ def get_camera_matrices(
         intrinsics.append(
             tf.stack(
                 [
-                    tf.stack([f_x, 0.0, -p_x]),
-                    tf.stack([0.0, -f_y, -p_y]),
-                    tf.stack([0.0, 0.0, -1.0]),
+                    tf.stack([f_x, 0.0, p_x]),
+                    tf.stack([0.0, f_y, p_y]),
+                    tf.stack([0.0, 0.0, 1.0]),
                 ]
             )
         )
@@ -268,6 +268,15 @@ def get_camera_matrices(
         position = cam_positions[frame_idx]
         quat = cam_quaternions[frame_idx]
         rotation_matrix = rotation_matrix_3d.from_quaternion(tf.concat([quat[1:], quat[0:1]], axis=0))
+        
+        flip_camera_axes = tf.constant([
+            [1.0,  0.0,  0.0],
+            [ 0.0, -1.0,  0.0],
+            [ 0.0,  0.0, -1.0],
+        ], dtype=tf.float32)
+
+        rotation_matrix = tf.matmul(rotation_matrix, flip_camera_axes)
+
         transformation = tf.concat(
             [rotation_matrix, position[:, tf.newaxis]],
             axis=1,
