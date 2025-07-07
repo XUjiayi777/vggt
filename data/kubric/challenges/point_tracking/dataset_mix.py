@@ -1169,6 +1169,7 @@ def get_args_parser():
     parser.add_argument("--image_size", type=int, default=128, help="image size for the dataset")
     parser.add_argument("--processed_dir", type=str, default="./datasets/kubric_processed_mix_3d/", help="path to processed data directory")
     parser.add_argument("--split", type=str, default="train", choices=["train", "validation"], help="split")
+    parser.add_argument("--shuffle_buffer_size", type=int, default=None, help="size of the shuffle buffer")
     parser.add_argument("--process_index",type=str, default=None,
     help="Index or list of indices of the dataset to process (e.g., '42' or '[42,43,44]')")
     return parser
@@ -1177,7 +1178,7 @@ def get_args_parser():
 def main():
     parser = get_args_parser()
     args = parser.parse_args()
-
+    
     raw_dir = args.raw_dir
     processed_dir = args.processed_dir
     split = args.split
@@ -1197,7 +1198,7 @@ def main():
         create_point_tracking_dataset(
             raw_dir=raw_dir,
             train_size=(image_size, image_size),
-            shuffle_buffer_size=True,  # FIXME suffle data
+            shuffle_buffer_size=args.shuffle_buffer_size,  # FIXME suffle data
             split=split,  # "validation"
             batch_dims=tuple(),
             repeat=False,
