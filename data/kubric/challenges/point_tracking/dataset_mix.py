@@ -78,20 +78,13 @@ def unproject(coord, cam, depth):
     shp = tf.convert_to_tensor(tf.shape(depth))
     idx = coord[:, 0] * shp[1] + coord[:, 1]
     coord = tf.cast(coord[..., ::-1], tf.float32)
-    shp = tf.cast(shp[1::-1], tf.float32)[tf.newaxis, ...]
-
-    # Need to convert from pixel to raster coordinate.
-    projected_pt = (coord + 0.5) / shp
-
-    projected_pt = tf.concat(
-        [
-            projected_pt,
-            tf.ones_like(projected_pt[:, -1:]),
-        ],
-        axis=-1,
-    )
-
-    camera_plane = projected_pt @ tf.linalg.inv(tf.transpose(cam["intrinsics"]))
+    
+    # Convert pixel coordinates to homogeneous coordinates [x, y, 1]
+    # Add 0.5 to convert from pixel indices to pixel centers
+    pixel_coords = tf.concat([coord + 0.5, tf.ones_like(coord[:, 0:1])], axis=-1)
+    
+    # Unproject using pixel-based camera intrinsics
+    camera_plane = pixel_coords @ tf.linalg.inv(tf.transpose(cam["intrinsics"]))
     camera_ball = camera_plane / tf.sqrt(
         tf.reduce_sum(
             tf.square(camera_plane),
@@ -251,10 +244,10 @@ def get_camera_matrices(
     for frame_idx in range(cam_quaternions.shape[0]):
         focal_length = tf.cast(cam_focal_length, tf.float32)
         sensor_width = tf.cast(cam_sensor_width, tf.float32)
-        f_x = focal_length / sensor_width
-        f_y = focal_length / sensor_width * input_size[0] / input_size[1]
-        p_x = 0.5
-        p_y = 0.5
+        f_x = focal_length / sensor_width * input_size[1]
+        f_y = focal_length / sensor_width * input_size[0] 
+        p_x = 0.5 * input_size[1]
+        p_y = 0.5 * input_size[0] 
         intrinsics.append(
             tf.stack(
                 [
@@ -390,7 +383,7 @@ def single_object_reproject(
     )
 
     occluded = tf.less(reproj[:, :, 2], 0)
-    reproj = reproj[:, :, 0:2] * np.array(input_size[::-1])[np.newaxis, np.newaxis, :]
+    reproj = reproj[:, :, 0:2]  
     occluded = tf.logical_or(
         occluded,
         estimate_occlusion_by_depth_and_segment(
@@ -1227,14 +1220,17 @@ def main():
             continue  
 
         if (data["sparse_target_points"] > 5000).sum() > 0:
+            print("data[sparse_target_points] > 5000.sum() > 0")
             print(f"Skip {i}")
             continue
 
         if (data["target_points"] > 5000).sum() > 0:
+            print("data[target_points] > 5000).sum() > 0")
             print(f"Skip {i}")
             continue
 
         if (data["reverse_target_points"] > 5000).sum() > 0:
+            print("data[reverse_target_points] > 5000).sum() > 0")
             print(f"Skip {i}")
             continue
 
