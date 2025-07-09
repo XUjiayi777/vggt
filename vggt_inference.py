@@ -10,8 +10,9 @@ from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
 def get_args_parser():
     parser = argparse.ArgumentParser()
-    parser.add_argument( "--output_dir", type=str, required=True, help="Path to the output directory.")
-    parser.add_argument( "--video_path", type=str, required=True, help="Path to the video file.")
+    parser.add_argument("--output_dir", type=str, required=True, help="Path to the output directory.")
+    parser.add_argument("--dataset_dir", type=str, help="Path to directory containing video files to process.")
+    parser.add_argument("--video_path", type=str, help="Path to a single video file.")
     return parser
 
 def video_2_images(video_path, output_folder):    
@@ -44,61 +45,128 @@ def video_2_images(video_path, output_folder):
         cap.release()
     return img_lists
 
+def process_single_video(video_path, output_dir, model, device, dtype):
+    """Process a single video file and save results."""
+    print(f"\nProcessing video: {video_path}")
+    
+    video_name = os.path.splitext(os.path.basename(video_path))[0]
+    images_folder = os.path.join(output_dir, video_name, "images")
+    depths_folder = os.path.join(output_dir, video_name, "depths")
+    os.makedirs(images_folder, exist_ok=True)
+    os.makedirs(depths_folder, exist_ok=True)
+    
+    try:
+        img_lists = video_2_images(video_path, images_folder)
+        images = load_and_preprocess_images(img_lists).to(device)
+        print("images shape:", images.shape)
+        
+        with torch.no_grad():
+            with torch.cuda.amp.autocast(dtype=dtype):
+                predictions = model(images)
+                
+        print(predictions.keys())
+        print(predictions['depth'].shape)
+        print(predictions['depth_conf'].shape)
+        
+        # Save depth maps for each frame
+        depths = predictions['depth'].cpu().numpy()  
+        depths = depths.squeeze()  
+        
+        for i, depth_map in enumerate(depths):
+            depth_normalized = ((depth_map - depth_map.min()) / (depth_map.max() - depth_map.min()) * 255).astype('uint8')
+            depth_path = os.path.join(depths_folder, f"depth_{i}.jpg")
+            cv2.imwrite(depth_path, depth_normalized)
+        print(f"Saved {len(depths)} depth maps to {depths_folder}")
+         
+        # save raw depth values as numpy array    
+        depth_raw_path = os.path.join(output_dir, video_name, f"_depth.npy")
+        depth_info = {
+            "depths": depths,
+            "depth_conf": predictions['depth_conf'].cpu().numpy(),
+        }
+        np.save(depth_raw_path, depth_info)
+
+        # Save camera parameters
+        extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
+        print("extrinsic shape:", extrinsic.shape)
+        print("intrinsic shape:", intrinsic.shape)
+        camera_info = { 
+                "intrinsics": intrinsic.cpu().numpy().astype(np.float16),
+                "extrinsic": extrinsic.cpu().numpy().astype(np.float16),
+        }
+        np.save(os.path.join(output_dir, video_name, "_camera.npy"), camera_info)
+        print(f"Successfully processed: {video_name}")
+        
+    except Exception as e:
+        print(f"Error processing {video_path}: {str(e)}")
+        return False
+    
+    return True
+
 def main():
     parser = get_args_parser()
     args = parser.parse_args()
+
+    # Validate arguments
+    if not args.dataset_dir and not args.video_path:
+        print("Error: Must provide either --dataset_dir or --video_path")
+        return
     
-    video_name = os.path.splitext(os.path.basename(args.video_path))[0]
-    images_folder = os.path.join(args.output_dir, video_name, "images")
-    depths_folder = os.path.join(args.output_dir, video_name, "depths")
-    os.makedirs(images_folder, exist_ok=True)
-    os.makedirs(depths_folder, exist_ok=True)
- 
+    if args.dataset_dir and args.video_path:
+        print("Error: Cannot use both --dataset_dir and --video_path. Choose one.")
+        return
+    
+    # Initialize model once
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+    print(f"Using device: {device}, dtype: {dtype}")
 
     model = VGGT()
     model.load_state_dict(torch.load("weights/model.pt"))
     model.to(device)
+    print("Model loaded successfully")
     
-    img_lists = video_2_images(args.video_path, images_folder)
-    images = load_and_preprocess_images(img_lists).to(device)
-    print("images shape:", images.shape)
-    
-    with torch.no_grad():
-        with torch.cuda.amp.autocast(dtype=dtype):
-            predictions = model(images)
-            
-    print(predictions.keys())
-    print(predictions['depth'].shape)
-    print(predictions['depth_conf'].shape)
-    
-    # Save depth maps for each frame
-    depths = predictions['depth'].cpu().numpy()  
-    depths = depths.squeeze()  
-    
-    for i, depth_map in enumerate(depths):
-        depth_normalized = ((depth_map - depth_map.min()) / (depth_map.max() - depth_map.min()) * 255).astype('uint8')
-        depth_path = os.path.join(depths_folder, f"depth_{i}.jpg")
-        cv2.imwrite(depth_path, depth_normalized)
+    # Get list of videos to process
+    video_files = []
+    if args.dataset_dir:
+        # Process all videos in directory
+        video_extensions = ['*.mp4', '*.avi', '*.mov', '*.mkv', '*.wmv', '*.flv', '*.webm']
+        for ext in video_extensions:
+            video_files.extend(glob.glob(os.path.join(args.dataset_dir, ext)))
+            video_files.extend(glob.glob(os.path.join(args.dataset_dir, ext.upper())))
         
-        # # Optionally save raw depth values as numpy array
-        # depth_raw_path = os.path.join(depths_folder, f"depth_{i:04d}.npy")
-        # np.save(depth_raw_path, depth_map)
-    print(f"Saved {len(depths)} depth maps to {depths_folder}")
+        if not video_files:
+            print(f"No video files found in {args.dataset_dir}")
+            return
+        
+        video_files.sort()
+        print(f"Found {len(video_files)} video files to process")
+    else:
+        # Process single video
+        video_files = [args.video_path]
     
-    # Save camera parameters
-    extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
-    print("extrinsic shape:", extrinsic.shape)
-    print("intrinsic shape:", intrinsic.shape)
-    camera_info = { 
-            "intrinsics": intrinsic.cpu().numpy().astype(np.float16),
-            "extrinsic": extrinsic.cpu().numpy().astype(np.float16),
-    }
-    np.save(os.path.join(args.output_dir, video_name, "_camera.npy"), camera_info)
+    # Process each video
+    successful = 0
+    failed = 0
+    
+    for i, video_path in enumerate(video_files):
+        print(f"\n=== Processing video {i+1}/{len(video_files)} ===")
+        success = process_single_video(video_path, args.output_dir, model, device, dtype)
+        if success:
+            successful += 1
+        else:
+            failed += 1
+    
+    print(f"\n=== Processing Complete ===")
+    print(f"Successfully processed: {successful} videos")
+    print(f"Failed: {failed} videos")
     return
 
 if __name__ == "__main__":
     main()
+    
+# Single video processing:
+# python vggt_inference.py --output_dir /data/jxucm/underwater_easy_processed --video_path /data/jxucm/underwater_easy/src_videos/P1010835_0-20_src.mp4
 
-# python vggt_inference.py --output_dir ./sample --video_path /data/jxucm/underwater_video_easy/P1010835_0-20_src.mp4
+# Directory processing:
+# python vggt_inference.py --output_dir /data/jxucm/underwater_easy_processed --dataset_dir /data/jxucm/underwater_easy/src_videos
