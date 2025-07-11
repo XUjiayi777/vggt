@@ -166,7 +166,7 @@ if __name__ == "__main__":
     main()
     
 # Single video processing:
-# python vggt_inference.py --output_dir /data/jxucm/underwater_easy_processed --video_path /data/jxucm/underwater_easy/src_videos/P1010835_0-20_src.mp4
+# python vggt_inference.py --output_dir ./sample --video_path /data/jxucm/underwater_easy/src_videos/P1010835_0-20_src.mp4
 
 # Directory processing:
 # python vggt_inference.py --output_dir /data/jxucm/underwater_easy_processed --dataset_dir /data/jxucm/underwater_easy/src_videos
