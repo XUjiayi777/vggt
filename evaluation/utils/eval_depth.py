@@ -2,6 +2,88 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+# Scale-invariant depth estimation
+# Pearson Correlation Coefficient
+def correlation(gt, pred, mask=None):
+    """Computes the Pearson correlation coefficient for predicted and ground truth depth maps.
+    
+    Args:
+        gt: Ground truth depth map as numpy array of shape HxW. Negative or 0 values are invalid and ignored.
+        pred: Predicted depth map as numpy array of shape HxW.
+        mask: Array of shape HxW with numerical or boolean values for element weights or validity.
+            For bool, False means invalid.
+    
+    Returns:
+        Scalar that indicates the Pearson correlation coefficient. Scalar is np.nan if the result is invalid.
+    """
+    mask = (gt > 0).astype(np.float32) * mask if mask is not None else (gt > 0).astype(np.float32)
+    
+    gt_valid = gt[mask > 0]
+    pred_valid = pred[mask > 0]
+    
+    if len(gt_valid) < 2:
+        return np.nan
+    
+    mu_gt = np.mean(gt_valid)
+    mu_pred = np.mean(pred_valid)
+    
+    cov = np.mean((gt_valid - mu_gt) * (pred_valid - mu_pred))
+    sigma_gt = np.std(gt_valid)
+    sigma_pred = np.std(pred_valid)
+    
+    if sigma_gt < 1e-8 or sigma_pred < 1e-8:
+        return np.nan
+    
+    corr = cov / (sigma_gt * sigma_pred)
+    corr = corr if np.isfinite(corr) else np.nan
+    
+    return corr
+
+# SI-MSE (In log space)
+def si_mse(gt, pred, mask=None):
+    """Computes the scale-invariant mean squared error in log space.
+    
+    D(y, y*) = (1/n) * sum(d_i^2) - (1/n^2) * (sum(d_i))^2
+    where d_i = log(y_i) - log(y*_i)
+    
+    Args:
+        gt: Ground truth depth map as numpy array of shape HxW. Negative or 0 values are invalid and ignored.
+        pred: Predicted depth map as numpy array of shape HxW.
+        mask: Array of shape HxW with numerical or boolean values for element weights or validity.
+            For bool, False means invalid.
+    
+    Returns:
+        Scalar that indicates the scale-invariant MSE. Scalar is np.nan if the result is invalid.
+    """
+    mask = (gt > 0).astype(np.float32) * mask if mask is not None else (gt > 0).astype(np.float32)
+    
+    gt_valid = gt[mask > 0]
+    pred_valid = pred[mask > 0]
+    
+    if len(gt_valid) < 1:
+        return np.nan
+
+    if np.any(pred_valid <= 0):
+        pred_valid = np.maximum(pred_valid, 1e-8)
+    
+    with np.errstate(divide='ignore', invalid='ignore'):
+        log_gt = np.log(gt_valid)
+        log_pred = np.log(pred_valid)
+    
+    if not np.all(np.isfinite(log_gt)) or not np.all(np.isfinite(log_pred)):
+        return np.nan
+    
+    d = log_pred - log_gt  # d_i = log(y_i) - log(y*_i)
+        
+    # Equation 3: D(y, y*) = (1/n) * sum(d_i^2) - (1/n^2) * (sum(d_i))^2
+    term1 = np.mean(d * d)  # (1/n) * sum(d_i^2)
+    term2 = (np.mean(d)) ** 2  # (1/n^2) * (sum(d_i))^2
+    
+    si_mse_value = term1 - term2
+    
+    return si_mse_value if np.isfinite(si_mse_value) else np.nan
+
+# Scale-variant depth estimation
 def align_pred_to_gt(
     pred_depth: np.ndarray,
     gt_depth: np.ndarray,

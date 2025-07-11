@@ -228,3 +228,104 @@ def load_and_preprocess_images(image_path_list, mode="crop"):
             images = images.unsqueeze(0)
 
     return images
+
+import numpy as np
+import torch
+import cv2  # for resizing
+import math
+
+def preprocess_depth_maps(depth_array_list, mode="crop"):
+    """
+    Preprocess depth maps (numpy arrays) for model input.
+    
+    Args:
+        depth_array_list (list of np.ndarray): List of depth maps, each 2D array.
+        mode (str): "crop" or "pad".
+    
+    Returns:
+        torch.Tensor: Batched tensor of depth maps (N, 1, H, W)
+    """
+    if len(depth_array_list) == 0:
+        raise ValueError("At least 1 depth map is required")
+
+    if mode not in ["crop", "pad"]:
+        raise ValueError("Mode must be either 'crop' or 'pad'")
+
+    target_size = 518
+    processed = []
+    shapes = set()
+
+    for depth in depth_array_list:
+        # Ensure depth is 2D numpy array
+        if depth.ndim != 2:
+            raise ValueError("Each depth map must be a 2D array")
+
+        height, width = depth.shape
+
+        if mode == "pad":
+            if width >= height:
+                new_width = target_size
+                new_height = int(round(height * (new_width / width) / 14) * 14)
+            else:
+                new_height = target_size
+                new_width = int(round(width * (new_height / height) / 14) * 14)
+        else:  # crop mode
+            new_width = target_size
+            new_height = int(round(height * (new_width / width) / 14) * 14)
+
+        # Resize depth map with INTER_LINEAR (better for depth)
+        resized = cv2.resize(depth, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+
+        if mode == "crop" and new_height > target_size:
+            start_y = (new_height - target_size) // 2
+            resized = resized[start_y:start_y + target_size, :]
+
+        if mode == "pad":
+            h_pad = target_size - resized.shape[0]
+            w_pad = target_size - resized.shape[1]
+
+            pad_top = h_pad // 2
+            pad_bottom = h_pad - pad_top
+            pad_left = w_pad // 2
+            pad_right = w_pad - pad_left
+
+            # Pad with white (value=1.0)
+            resized = np.pad(
+                resized,
+                ((pad_top, pad_bottom), (pad_left, pad_right)),
+                mode="constant",
+                constant_values=1.0
+            )
+
+        shapes.add(resized.shape)
+        # Convert to torch tensor with shape (1,H,W)
+        tensor = torch.from_numpy(resized).unsqueeze(0).float()  # single channel
+        processed.append(tensor)
+
+    # Check if different shapes
+    if len(shapes) > 1:
+        print(f"Warning: Found depth maps with different shapes: {shapes}")
+        max_h = max(s[0] for s in shapes)
+        max_w = max(s[1] for s in shapes)
+        padded = []
+        for t in processed:
+            h_pad = max_h - t.shape[1]
+            w_pad = max_w - t.shape[2]
+            pad_top = h_pad // 2
+            pad_bottom = h_pad - pad_top
+            pad_left = w_pad // 2
+            pad_right = w_pad - pad_left
+            if h_pad > 0 or w_pad > 0:
+                t = torch.nn.functional.pad(
+                    t, (pad_left, pad_right, pad_top, pad_bottom), mode="constant", value=1.0
+                )
+            padded.append(t)
+        processed = padded
+
+    batch = torch.stack(processed)
+
+    # Single depth map fix for dims
+    if len(depth_array_list) == 1 and batch.dim() == 3:
+        batch = batch.unsqueeze(0)
+
+    return batch

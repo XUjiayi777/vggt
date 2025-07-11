@@ -8,7 +8,7 @@ import warnings
 from vggt.utils.load_fn import load_and_preprocess_images, preprocess_depth_maps
 
 from utils.eval_pose import estimate_camera_pose,calculate_auc_np
-from utils.eval_depth import thresh_inliers,m_rel_ae,pointwise_rel_ae,align_pred_to_gt
+from utils.eval_depth import thresh_inliers,m_rel_ae,pointwise_rel_ae,align_pred_to_gt,correlation,si_mse
 from utils.general import set_random_seeds,load_model
 from ba import run_vggt_with_ba
 import argparse
@@ -38,6 +38,7 @@ def setup_args():
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--cuda_id',type=str, help='CUDA device ID')
     return parser.parse_args()
+
 def ned_to_c2w(ned):
     ned = np.array(ned, dtype=np.float32)
     #NOTE: we need to convert x_y_z coordinate system to z_x_y coordinate system
@@ -140,8 +141,14 @@ def main():
         ).squeeze().numpy()
         gt_depths= gt_depths.cpu().numpy()
         
+        # Scale-invariant metrics
+        Pearson_corr = correlation(gt_depths, pre_depths, mask=valid_mask)
+        si_mse_value= si_mse(gt_depths, pre_depths, mask=valid_mask)
+        
+        
         align_pred_depths=[]
         # print(valid_mask.shape)
+        
         move_out= False
         for i in range(args.num_frames):  
             valid_mask_idx = valid_mask[i]  
@@ -179,6 +186,8 @@ def main():
             "Auc_15": Auc_15,
             "Auc_5": Auc_5,
             "Auc_3": Auc_3,
+            "Pearson_corr": Pearson_corr,
+            "si_mse": si_mse_value,
             "inlier_ratio": inlier_ratio,
             "mean_rel": mean_rel,
         }
@@ -194,6 +203,7 @@ def main():
     for sequence in sorted(result_summary.keys()):
         print(f"{BOLD}{BLUE}{sequence:<5}: {RESET} {GREEN}{result_summary[sequence]['Auc_30']:.4f}{WHITE} (AUC@30){GREEN}, {result_summary[sequence]['Auc_15']:.4f}{WHITE} (AUC@15){GREEN}, {result_summary[sequence]['Auc_5']:.4f}{WHITE} (AUC@5){GREEN}, {result_summary[sequence]['Auc_3']:.4f}{WHITE} (AUC@3){RESET}")
         print(f'{BOLD}inlier_ratio:{RESET} {CYAN}{result_summary[sequence]["inlier_ratio"]:.4f}{RESET}, {BOLD}mean_rel:{RESET} {CYAN}{result_summary[sequence]["mean_rel"]:.4f}{RESET}')
+        print(f'{BOLD}Pearson_corr:{RESET} {CYAN}{result_summary[sequence]["Pearson_corr"]:.4f}{RESET}, {BOLD}si_mse:{RESET} {CYAN}{result_summary[sequence]["si_mse"]:.4f}{RESET}')
 
         
     if result_summary:
@@ -203,10 +213,13 @@ def main():
         mean_AUC_3 = np.mean([result_summary[sequence]["Auc_3"] for sequence in result_summary])
         mean_inlier_ratio = np.mean([result_summary[sequence]["inlier_ratio"] for sequence in result_summary])
         mean_rel_result = np.mean([result_summary[sequence]["mean_rel"] for sequence in result_summary])
+        mean_Pearson_corr = np.mean([result_summary[sequence]["Pearson_corr"] for sequence in result_summary])
+        mean_si_mse = np.mean([result_summary[sequence]["si_mse"] for sequence in result_summary])
         
         print("-"*50)
         print(f"{BOLD}{RED}Mean AUC: {RESET} {GREEN}{mean_AUC_30:.4f}{WHITE} (AUC@30){GREEN}, {mean_AUC_15:.4f}{WHITE} (AUC@15){GREEN}, {mean_AUC_5:.4f}{WHITE} (AUC@5){GREEN}, {mean_AUC_3:.4f}{WHITE} (AUC@3){RESET}")
         print(f"{BOLD}{RED}Mean inlier ratio: {RESET} {GREEN}{mean_inlier_ratio:.4f}, {BOLD}{RED}Mean rel: {RESET} {GREEN}{mean_rel_result:.4f}")
+        print(f"{BOLD}{RED}Mean Pearson correlation: {RESET} {GREEN}{mean_Pearson_corr:.4f}, {BOLD}{RED}Mean si_mse: {RESET} {GREEN}{mean_si_mse:.4f}")
     
 if __name__ == "__main__":
     main()
@@ -215,11 +228,11 @@ if __name__ == "__main__":
 '''
 Example:
  python test_TartanAir.py \
-    --model_path ../weights/model_tracker_fixed_e20.pt \
-    --TAir_dir ../data/TartanAir/ocean/ \
-    --mode Easy \
+    --model_path ../weights/model.pt \
+    --TAir_dir /data/jxucm/tartainair/ocean \
+    --mode Hard \
     --num_frames 20 \
     --seed 77 \
-    --cuda_id 7 \
+    --cuda_id 0 \
     --camera left 
 '''
