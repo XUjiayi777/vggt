@@ -256,30 +256,103 @@ def m_rel_ae(gt, pred, mask=None, output_scaling_factor=1.0):
     return m_rel_ae
 
 
-def pointwise_rel_ae(gt, pred, mask=None, output_scaling_factor=1.0):
-    """Computes the pointwise relative-absolute-error for a predicted and ground truth depth map.
+def sq_rel_ae(gt, pred, mask=None, output_scaling_factor=1.0):
+    """Computes the squared-relative-absolute-error for a predicted and ground truth depth map.
 
     Args:
-        gt: Ground truth depth map as numpy array of shape 1HxW. Negative or 0 values are invalid and ignored.
-        pred: Predicted depth map as numpy array of shape 1xHxW.
-        mask: Array of shape 1xHxW with numerical or boolean values for element weights or validity.
+        gt: Ground truth depth map as numpy array of shape HxW. Negative or 0 values are invalid and ignored.
+        pred: Predicted depth map as numpy array of shape HxW.
+        mask: Array of shape HxW with numerical or boolean values for element weights or validity.
             For bool, False means invalid.
         output_scaling_factor: Scaling factor that is applied after computing the metrics (e.g. to get [%]).
 
     Returns:
-        Numpy array of shape 1xHxW with pointwise relative-absolute-error values.
+        Scalar that indicates the squared-relative-absolute-error. Scalar is np.nan if the result is invalid.
     """
     mask = (gt > 0).astype(np.float32) * mask if mask is not None else (gt > 0).astype(np.float32)
 
     e = pred - gt
-    ae = np.abs(e)
+    se = e * e  # squared error
     with np.errstate(divide='ignore', invalid='ignore'):
-        rel_ae = np.nan_to_num(ae / gt, nan=0, posinf=0, neginf=0)  # nan values are masked out anyways
-    rel_ae *= mask
+        sq_rel_ae = np.nan_to_num(se / gt, nan=0, posinf=0, neginf=0)
 
-    rel_ae = rel_ae * output_scaling_factor
+    sq_rel_ae_mean, valid = valid_mean(sq_rel_ae, mask)
 
-    return rel_ae
+    sq_rel_ae_mean = sq_rel_ae_mean * output_scaling_factor
+    sq_rel_ae_mean = sq_rel_ae_mean if valid else np.nan
+
+    return sq_rel_ae_mean
+
+
+def rmse(gt, pred, mask=None, output_scaling_factor=1.0):
+    """Computes the root-mean-square-error for a predicted and ground truth depth map.
+
+    Args:
+        gt: Ground truth depth map as numpy array of shape HxW. Negative or 0 values are invalid and ignored.
+        pred: Predicted depth map as numpy array of shape HxW.
+        mask: Array of shape HxW with numerical or boolean values for element weights or validity.
+            For bool, False means invalid.
+        output_scaling_factor: Scaling factor that is applied after computing the metrics (e.g. to get [%]).
+
+    Returns:
+        Scalar that indicates the root-mean-square-error. Scalar is np.nan if the result is invalid.
+    """
+    mask = (gt > 0).astype(np.float32) * mask if mask is not None else (gt > 0).astype(np.float32)
+
+    e = pred - gt
+    se = e * e  # squared error
+
+    mse, valid = valid_mean(se, mask)
+    rmse_value = np.sqrt(mse) if valid and mse >= 0 else np.nan
+
+    rmse_value = rmse_value * output_scaling_factor
+    rmse_value = rmse_value if np.isfinite(rmse_value) else np.nan
+
+    return rmse_value
+
+
+def rmse_log(gt, pred, mask=None, output_scaling_factor=1.0):
+    """Computes the root-mean-square-error in log space for a predicted and ground truth depth map.
+
+    Args:
+        gt: Ground truth depth map as numpy array of shape HxW. Negative or 0 values are invalid and ignored.
+        pred: Predicted depth map as numpy array of shape HxW.
+        mask: Array of shape HxW with numerical or boolean values for element weights or validity.
+            For bool, False means invalid.
+        output_scaling_factor: Scaling factor that is applied after computing the metrics (e.g. to get [%]).
+
+    Returns:
+        Scalar that indicates the root-mean-square-error in log space. Scalar is np.nan if the result is invalid.
+    """
+    mask = (gt > 0).astype(np.float32) * mask if mask is not None else (gt > 0).astype(np.float32)
+
+    # Ensure both gt and pred are positive for log computation
+    gt_valid = gt[mask > 0]
+    pred_valid = pred[mask > 0]
+    
+    if len(gt_valid) < 1:
+        return np.nan
+
+    # Clamp predicted values to avoid log(0) or log(negative)
+    pred_valid = np.maximum(pred_valid, 1e-8)
+    
+    with np.errstate(divide='ignore', invalid='ignore'):
+        log_gt = np.log(gt_valid)
+        log_pred = np.log(pred_valid)
+    
+    if not np.all(np.isfinite(log_gt)) or not np.all(np.isfinite(log_pred)):
+        return np.nan
+    
+    e_log = log_pred - log_gt
+    se_log = e_log * e_log  # squared error in log space
+    
+    mse_log = np.mean(se_log)
+    rmse_log_value = np.sqrt(mse_log) if mse_log >= 0 else np.nan
+
+    rmse_log_value = rmse_log_value * output_scaling_factor
+    rmse_log_value = rmse_log_value if np.isfinite(rmse_log_value) else np.nan
+
+    return rmse_log_value
 
 
 def sparsification(gt, pred, uncertainty, mask=None, error_fct=m_rel_ae, show_pbar=False, pbar_desc=None):

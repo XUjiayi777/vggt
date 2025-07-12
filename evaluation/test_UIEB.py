@@ -8,7 +8,7 @@ import warnings
 from vggt.utils.load_fn import load_and_preprocess_images, preprocess_depth_maps
 
 from utils.eval_pose import calculate_auc_np, align_to_first_camera, se3_to_relative_pose_error
-from utils.eval_depth import thresh_inliers,m_rel_ae,pointwise_rel_ae,align_pred_to_gt,correlation,si_mse
+from utils.eval_depth import thresh_inliers,m_rel_ae,sq_rel_ae,align_pred_to_gt,correlation,si_mse,rmse,rmse_log
 from utils.eval_pose import rotation_angle, translation_angle,closed_form_inverse_se3
 from utils.general import set_random_seeds,load_model
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
@@ -132,17 +132,25 @@ def main():
                 source_depth = source_prediction['depth'].squeeze().cpu().numpy()
                 target_depth = target_prediction['depth'].squeeze().cpu().numpy()
                 
+                
                 # Depth estimation
-                Pearson_corr = correlation(source_depth, target_depth)
-                si_mse_value= si_mse(source_depth, target_depth)
-                inlier_ratio=thresh_inliers(source_depth, target_depth, 1.03, mask=None, output_scaling_factor=100)
-                mean_rel=m_rel_ae(source_depth, target_depth, mask=None, output_scaling_factor=100)
+                # Pearson_corr = correlation(source_depth, target_depth)
+                # si_mse_value= si_mse(source_depth, target_depth)
+                inlier_ratio=thresh_inliers(source_depth, target_depth, 1.03)
+                abs_rel=m_rel_ae(source_depth, target_depth)
+                sq_rel=sq_rel_ae(source_depth, target_depth)
+                rmse_value= rmse(source_depth, target_depth)
+                rmse_log_value= rmse_log(source_depth, target_depth)
 
                 result_summary[i] = {
-                    'Pearson_corr': Pearson_corr,
-                    'si_mse': si_mse_value,
+                    'image_name':source_images_names[i],
+                    # 'Pearson_corr': Pearson_corr,
+                    # 'si_mse': si_mse_value,
                     'inlier_ratio': inlier_ratio,
-                    'mean_rel': mean_rel
+                    'abs_rel': abs_rel,
+                    'sq_rel': sq_rel,
+                    'rmse': rmse_value,
+                    'rmse_log': rmse_log_value
                 }
                 # # Camera pose estimation (AUC)
                 # rError, tError = camera_pose_diff(source_prediction, target_prediction, device, source_image)
@@ -167,14 +175,33 @@ def main():
             # mean_AUC_5 = np.mean([result_summary[index]["Auc_5"] for index in result_summary])
             # mean_AUC_3 = np.mean([result_summary[index]["Auc_3"] for index in result_summary])
             mean_inlier_ratio = np.mean([result_summary[index]["inlier_ratio"] for index in result_summary])
-            mean_rel_result = np.mean([result_summary[index]["mean_rel"] for index in result_summary])
-            mean_Pearson_corr = np.mean([result_summary[index]["Pearson_corr"] for index in result_summary])
-            mean_si_mse = np.mean([result_summary[index]["si_mse"] for index in result_summary])
+            mean_abs_rel = np.mean([result_summary[index]["abs_rel"] for index in result_summary])
+            mean_sq_rel = np.mean([result_summary[index]["sq_rel"] for index in result_summary])
+            mean_rmse = np.mean([result_summary[index]["rmse"] for index in result_summary])
+            mean_rmse_log = np.mean([result_summary[index]["rmse_log"] for index in result_summary])
+            # mean_Pearson_corr = np.mean([result_summary[index]["Pearson_corr"] for index in result_summary])
+            # mean_si_mse = np.mean([result_summary[index]["si_mse"] for index in result_summary])
             
             print("-"*50)
             # print(f"{BOLD}{RED}Mean AUC: {RESET} {GREEN}{mean_AUC_30:.4f}{WHITE} (AUC@30){GREEN}, {mean_AUC_15:.4f}{WHITE} (AUC@15){GREEN}, {mean_AUC_5:.4f}{WHITE} (AUC@5){GREEN}, {mean_AUC_3:.4f}{WHITE} (AUC@3){RESET}")
-            print(f"{BOLD}{RED}Mean inlier ratio: {RESET} {GREEN}{mean_inlier_ratio:.4f}, {BOLD}{RED}Mean rel: {RESET} {GREEN}{mean_rel_result:.4f}")
-            print(f"{BOLD}{RED}Mean Pearson correlation: {RESET} {GREEN}{mean_Pearson_corr:.4f}, {BOLD}{RED}Mean si_mse: {RESET} {GREEN}{mean_si_mse:.4f}")
+            print(f"{BOLD}{RED}Mean inlier ratio: {RESET} {GREEN}{mean_inlier_ratio:.4f}")
+            print(f"{BOLD}{RED}Mean abs rel: {RESET} {GREEN}{mean_abs_rel:.4f}, {BOLD}{RED}Mean sq rel: {RESET} {GREEN}{mean_sq_rel:.4f}")
+            print(f"{BOLD}{RED}Mean rmse: {RESET} {GREEN}{mean_rmse:.4f}, {BOLD}{RED}Mean rmse_log: {RESET} {GREEN}{mean_rmse_log:.4f}")
+            # print(f"{BOLD}{RED}Mean Pearson correlation: {RESET} {GREEN}{mean_Pearson_corr:.4f}, {BOLD}{RED}Mean si_mse: {RESET} {GREEN}{mean_si_mse:.4f}")
+            
+            # Find and print top 3 pairs with highest mean_rel
+            print(f"\n{BOLD}{CYAN}Top 3 pairs with highest mean_rel:{RESET}")
+            # Sort results by mean_rel in descending order
+            sorted_results = sorted(result_summary.items(), key=lambda x: x[1]['abs_rel'], reverse=True)
+            
+            for rank, (idx, result) in enumerate(sorted_results[:5], 1):
+                image_name = os.path.basename(result['image_name'])
+                print(f"{BOLD}{rank}.{RESET} {BLUE}Image pair {idx}:{RESET} {image_name}")
+                print(f"   {WHITE}Abs Rel:{RESET} {RED}{result['abs_rel']:.6f}{RESET}")
+                print(f"   {WHITE}Inlier Ratio:{RESET} {GREEN}{result['inlier_ratio']:.4f}{RESET}")
+                # print(f"   {WHITE}Pearson Corr:{RESET} {GREEN}{result['Pearson_corr']:.4f}{RESET}")
+                # print(f"   {WHITE}SI-MSE:{RESET} {GREEN}{result['si_mse']:.6f}{RESET}")
+                print()
     
     
 if __name__ == "__main__":
