@@ -8,7 +8,7 @@ import torch
 from PIL import Image
 from torchvision import transforms as TF
 import numpy as np
-
+import cv2  # for resizing
 
 def load_and_preprocess_images_square(image_path_list, target_size=1024):
     """
@@ -228,11 +228,6 @@ def load_and_preprocess_images(image_path_list, mode="crop"):
             images = images.unsqueeze(0)
 
     return images
-
-import numpy as np
-import torch
-import cv2  # for resizing
-import math
 
 def preprocess_depth_maps(depth_array_list, mode="crop"):
     """

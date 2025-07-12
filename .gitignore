@@ -158,3 +158,4 @@ weights/
 data/kubric/challenges/point_tracking/datasets
 data/kubric/challenges/point_tracking/google-cloud-sdk
 data/water
+result/
