@@ -26,14 +26,15 @@ torch.set_float32_matmul_precision('highest')
 torch.backends.cudnn.allow_tf32 = False
 
 def setup_args():
-    """Set up command-line arguments for the UIEB evaluation script."""
-    parser = argparse.ArgumentParser(description='Test VGGT on UIEB dataset')
+    """Set up command-line arguments for the UVEB evaluation script."""
+    parser = argparse.ArgumentParser(description='Test VGGT on UVEB dataset')
     parser.add_argument('--source_dir', type=str, required=True, help='Path to UIEB source dataset')
     parser.add_argument('--ref_dir', type=str, required=True, help='Path to UIEB reference dataset')
     parser.add_argument('--model_path', type=str, required=True, help='Path to the VGGT model checkpoint')
-    parser.add_argument('--use_ba', action='store_true', default=False, help='Enable bundle adjustment')
+    
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--cuda_id',type=str, help='CUDA device ID')
+    parser.add_argument('--use_ba', action='store_true', default=False, help='Enable bundle adjustment')
     # parser.add_argument('--debug', action='store_true', help='Enable debug mode (only test on specific category)')
     # parser.add_argument('--num_frames', type=int, default=10, help='Number of frames to use for testing')
     # parser.add_argument('--log_file_path', type=str, default='../logs/log_tartanair.txt', help='Path to log file')

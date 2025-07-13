@@ -28,7 +28,7 @@ def video_2_images(video_path, output_folder):
         if video_fps == 0:
             cap.release()
             raise ValueError(f"Error: Video FPS is 0 for {video_path}")
-        frame_interval = round(video_fps)
+        frame_interval = round(video_fps*0.3)
         frame_indices = list(range(0, total_frames, frame_interval))
         print(
             f" - Video FPS: {video_fps}, Total frames: {total_frames}, Frame Interval: {frame_interval}, Total Frames to Read: {len(frame_indices)}"
