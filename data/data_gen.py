@@ -10,12 +10,12 @@ FOGGY = {
     "backscatter_color": [0.7, 0.7, 0.7]  
 }
 
+
 def get_args_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument( "--data_dir", type=str, default="/data/jxucm/mip_nerf_360/garden/images_8",
         help="Path to the dataset directory containing images.",
     )
-
     return parser
 
 def read_first_image(data_dir):
