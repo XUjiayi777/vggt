@@ -97,12 +97,12 @@ class BaseDataset(Dataset):
         Calculate the target shape based on the given aspect ratio.
 
         Args:
-            aspect_ratio: Target aspect ratio
+            aspect_ratio: Target aspect ratio 
 
         Returns:
             numpy.ndarray: Target image shape [height, width]
         """
-        short_size = int(self.img_size * aspect_ratio)
+        short_size = int(self.img_size * aspect_ratio) # height
         small_size = self.patch_size
 
         # ensure the input shape is friendly to vision transformer
