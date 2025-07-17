@@ -6,18 +6,13 @@ import glob
 import shutil
 import pdb
 
-# FOGGY = {
-#     "attenuation": 2.4, 
-#     "backscatter": 2.4, 
-#     "backscatter_color": [0.7, 0.7, 0.7]  
-# }
-
 WATER = {
-    "attenuation": [0.3, 0.15, 0.05],      # Much smaller attenuation coefficients
-    "backscatter": [0.2, 0.1, 0.03],      # Smaller backscatter coefficients  
-    "backscatter_color": [0.07, 0.2, 0.39], # Blue-green water color
-    "max_depth": 50.0,                     # Maximum effective depth for underwater visibility
-    "depth_scale": 0.1                     # Scale factor to make depth more reasonable
+    # Base parameters - these will be randomized within ranges
+    "attenuation_range": [[0.2, 0.6], [0.1, 0.3], [0.05, 0.15]],  # [R, G, B] ranges
+    "backscatter_range": [[0.2, 0.4], [0.1, 0.2], [0.05, 0.1]], # [R, G, B] ranges
+    "backscatter_color_range": [[0.05, 0.1], [0.15, 0.25], [0.35, 0.55]], # [R, G, B] ranges
+    "max_depth_range": [10.0, 40.0],           # Range for maximum depth
+    "depth_scale_range": [0.15, 0.25],         # Range for depth scaling
 }
 
 def get_args_parser():
@@ -45,6 +40,51 @@ def get_args_parser():
         help="Enable debug mode with detailed output and breakpoints",
     )
     return parser
+
+def generate_random_water_params(base_params, seed=None):
+    """
+    Generate randomized water parameters for each frame.
+    
+    Args:
+        base_params: Dictionary with parameter ranges
+        seed: Optional seed for reproducibility
+    
+    Returns:
+        Dictionary with randomized water parameters
+    """
+    if seed is not None:
+        np.random.seed(seed)
+    
+    attenuation = [
+        np.random.uniform(base_params["attenuation_range"][0][0], base_params["attenuation_range"][0][1]),  # Red
+        np.random.uniform(base_params["attenuation_range"][1][0], base_params["attenuation_range"][1][1]),  # Green  
+        np.random.uniform(base_params["attenuation_range"][2][0], base_params["attenuation_range"][2][1])   # Blue
+    ]
+    
+
+    backscatter = [
+        np.random.uniform(base_params["backscatter_range"][0][0], base_params["backscatter_range"][0][1]),  # Red
+        np.random.uniform(base_params["backscatter_range"][1][0], base_params["backscatter_range"][1][1]),  # Green
+        np.random.uniform(base_params["backscatter_range"][2][0], base_params["backscatter_range"][2][1])   # Blue
+    ]
+    
+    backscatter_color = [
+        np.random.uniform(base_params["backscatter_color_range"][0][0], base_params["backscatter_color_range"][0][1]),  # Red
+        np.random.uniform(base_params["backscatter_color_range"][1][0], base_params["backscatter_color_range"][1][1]),  # Green
+        np.random.uniform(base_params["backscatter_color_range"][2][0], base_params["backscatter_color_range"][2][1])   # Blue
+    ]
+    
+    max_depth = np.random.uniform(base_params["max_depth_range"][0], base_params["max_depth_range"][1])
+    depth_scale = np.random.uniform(base_params["depth_scale_range"][0], base_params["depth_scale_range"][1])
+    
+    return {
+        "attenuation": attenuation,
+        "backscatter": backscatter,
+        "backscatter_color": backscatter_color,
+        "max_depth": max_depth,
+        "depth_scale": depth_scale,
+    }
+
 
 def add_effect_to_image(image_rgb, effect_params, depth, debug=False):
     """
@@ -234,12 +274,24 @@ def process_scene_clone_to_underwater(scene_path, target_clone="clone", new_clon
                 # Ensure RGB and depth have compatible dimensions
                 if rgb_array.shape[:2] != depth_array.shape[:2]:
                     print(f"Warning: RGB {rgb_array.shape[:2]} and depth {depth_array.shape[:2]} dimensions don't match for {rgb_basename}")
-                    # Resize depth to match RGB
                     depth_pil = Image.fromarray(depth_array).resize((rgb_array.shape[1], rgb_array.shape[0]), Image.NEAREST)
                     depth_array = np.array(depth_pil)
                 
-                # Apply underwater effect
-                underwater_image = add_effect_to_image(rgb_array, WATER, depth_array, debug)
+                # Generate random water parameters for this frame
+                # Use frame index as seed for reproducible but varied effects
+                frame_seed = hash(rgb_basename) % 10000 
+                random_water_params = generate_random_water_params(WATER, seed=frame_seed)
+                
+                if debug and processed_count == 0:  # Show params for first image only
+                    print(f"Random water params for {rgb_basename}:")
+                    print(f"  Attenuation: {random_water_params['attenuation']}")
+                    print(f"  Backscatter: {random_water_params['backscatter']}")
+                    print(f"  Water color: {random_water_params['backscatter_color']}")
+                    print(f"  Max depth: {random_water_params['max_depth']}")
+                    print(f"  Depth scale: {random_water_params['depth_scale']}")
+                
+                # Apply underwater effect with random parameters
+                underwater_image = add_effect_to_image(rgb_array, random_water_params, depth_array, debug)
                 
                 # Save the processed image
                 underwater_pil = Image.fromarray(underwater_image)
