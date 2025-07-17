@@ -6,7 +6,7 @@ import json
 import logging
 import warnings
 from vggt.utils.load_fn import load_and_preprocess_images, preprocess_depth_maps
-
+import cv2
 from utils.eval_pose import calculate_auc_np, align_to_first_camera, se3_to_relative_pose_error
 from utils.eval_depth import thresh_inliers,m_rel_ae,sq_rel_ae,align_pred_to_gt,correlation,si_mse,rmse,rmse_log
 from utils.eval_pose import rotation_angle, translation_angle,closed_form_inverse_se3
@@ -128,8 +128,11 @@ def main():
     all_auc_15 = []
     all_auc_5 = []
     all_auc_3 = []
-    
-    for camera_id in [0,1]:
+    all_Pearson_corr = []
+    all_si_mse = []
+    all_inlier_ratio = []
+
+    for camera_id in [0, 1]:
         print(f"\n--- Processing Camera {camera_id} ---")
         each_camera_parameters = camera_parameters[camera_parameters[:, 1] == camera_id]
         each_camera_intrinsic = camera_intrinsic[camera_intrinsic[:, 1] == camera_id]
@@ -145,18 +148,35 @@ def main():
                     image_list.append(os.path.join(image_path_1,filename))
             image_list.sort()  # Sort for consistent ordering
             print(f"Found {len(image_list)} images in {image_path_1}")
+                    
             
-            # Generate image indices with stride 2
-            stride = args.stride
-            max_images = min(args.num_frames, len(image_list) // stride)
-            image_indices = list(range(0, max_images * stride, stride))
-            selected_image_list = [image_list[idx] for idx in image_indices]
-            
-            print(f"Selected {len(selected_image_list)} images with stride {stride}")
-            print(f"Image indices: {image_indices}")
+        # Generate image indices 
+        stride = args.stride
+        max_images = min(args.num_frames, len(image_list) // stride)
+        image_indices = list(range(0, max_images * stride, stride))
+        selected_image_list = [image_list[idx] for idx in image_indices]
+        
+        print(f"Selected {len(selected_image_list)} images with stride {stride}")
+        print(f"Image indices: {image_indices}")
         
         images = load_and_preprocess_images(selected_image_list).to(device)
         # print(images.shape)
+        
+        gt_depths = None
+        if os.path.exists(depth_path_1):
+            depth_arrays = []
+            for image_idx in image_indices:
+                depth_file_path = os.path.join(depth_path_1, f"depth_{image_idx:05d}.png")
+                if os.path.exists(depth_file_path):
+                    depth_img = cv2.imread(depth_file_path, cv2.IMREAD_ANYDEPTH)
+                    depth_arrays.append(depth_img)
+            
+            if depth_arrays:
+                depth_array = np.stack(depth_arrays, axis=0)
+                gt_depths = preprocess_depth_maps(depth_array).to(device).squeeze()
+                print(f"Loaded {len(depth_arrays)} depth maps, shape: {gt_depths.shape}")
+            else:
+                print("No depth files found")
         
         gt_extrinsic = []
         for image_idx in image_indices:
@@ -183,28 +203,37 @@ def main():
         all_auc_5.append(Auc_5)
         all_auc_3.append(Auc_3)
         
+        # Depth estimation 
+        valid_mask = torch.logical_and(
+        gt_depths.cpu() > 1e-3,     # filter out black background
+        predictions['depth_conf'].cpu() > 5,
+        ).squeeze().numpy()
+        
+        gt_depths = gt_depths.cpu().numpy()
+        pre_depths = predictions['depth'].squeeze().cpu().numpy()
+        
+        Pearson_corr = correlation(gt_depths, pre_depths, mask=valid_mask)
+        si_mse_value= si_mse(gt_depths, pre_depths, mask=valid_mask)
+        inlier_ratio=thresh_inliers(gt_depths, pre_depths, 1.25, mask=valid_mask)
+        print(f"Camera {camera_id} - Pearson Correlation: {Pearson_corr:.4f}, SI-MSE: {si_mse_value:.4f}, Inlier Ratio: {inlier_ratio:.4f}")
+        
+        all_Pearson_corr.append(Pearson_corr)
+        all_si_mse.append(si_mse_value)
+        all_inlier_ratio.append(inlier_ratio)
+
     mean_auc_30 = np.mean(all_auc_30)
     mean_auc_15 = np.mean(all_auc_15)
     mean_auc_5 = np.mean(all_auc_5)
     mean_auc_3 = np.mean(all_auc_3)
+    mean_Pearson_corr = np.mean(all_Pearson_corr)
+    mean_si_mse = np.mean(all_si_mse)
+    mean_inlier_ratio = np.mean(all_inlier_ratio)
     
     print(f"\n--- Mean AUC across all cameras ---")
     print(f"Mean AUC@30: {mean_auc_30:.4f}, Mean AUC@15: {mean_auc_15:.4f}, Mean AUC@5: {mean_auc_5:.4f}, Mean AUC@3: {mean_auc_3:.4f}")
-        
-
-    # blur_depth_info = np.load(f"{blur_datapath}/_depth.npy", allow_pickle=True).item()
-    # gt_depth_info = np.load(f"{gt_datapath}/_depth.npy", allow_pickle=True).item()
-    # blur_depth=blur_depth_info["depths"]
-    # gt_depth=gt_depth_info["depths"]
-    # blur_depth_conf=blur_depth_info["depth_conf"].squeeze()
-    # gt_depth_conf=gt_depth_info["depth_conf"].squeeze()
+    print(f"Mean Pearson Correlation: {mean_Pearson_corr:.4f}, Mean SI-MSE: {mean_si_mse:.4f}, Mean Inlier Ratio: {mean_inlier_ratio:.4f}")   
     
     # inlier_ratio=thresh_inliers(blur_depth, gt_depth, 1.03)
-    # abs_rel=m_rel_ae(blur_depth, gt_depth)
-    # sq_rel=sq_rel_ae(blur_depth, gt_depth)  
-    # rmse_value= rmse(blur_depth, gt_depth)
-    # rmse_log_value= rmse_log(blur_depth, gt_depth)
-    # print(f"Inlier Ratio: {inlier_ratio:.4f}, Abs Rel: {abs_rel:.4f}, Sq Rel: {sq_rel:.4f}, RMSE: {rmse_value:.4f}, RMSE Log: {rmse_log_value:.4f}")
 
 if __name__ == "__main__":
     main()
@@ -214,7 +243,7 @@ Example:
  python test_vkitti.py \
     --data_dir  /data/jxucm/vkitti \
     --sceneid Scene01 \
-    --scene underwater \
+    --scene clone \
     --num_frames 20 \
     --stride 3 \
     --seed 77 \

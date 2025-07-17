@@ -8,6 +8,7 @@ import torch
 from PIL import Image
 from torchvision import transforms as TF
 import numpy as np
+import cv2
 
 def load_and_preprocess_images_square(image_path_list, target_size=1024):
     """
