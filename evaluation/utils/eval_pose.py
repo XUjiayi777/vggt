@@ -3,6 +3,8 @@ import numpy as np
 from vggt.utils.geometry import closed_form_inverse_se3
 from vggt.utils.rotation import mat_to_quat
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+import pdb
+
 def estimate_camera_pose(predictions, images, num_frames, use_ba, device, gt_extrinsic):
     """
     Process a single sequence and compute pose errors.
@@ -13,7 +15,7 @@ def estimate_camera_pose(predictions, images, num_frames, use_ba, device, gt_ext
         num_frames: Number of frames to sample
         use_ba: Whether to use bundle adjustment
         device: Device to run on
-        gt_extrinsic: Ground truth extrinsics
+        gt_extrinsic: Ground truth extrinsics (camera-to-world transformations)
 
     Returns:
         rError: Rotation errors
