@@ -5,13 +5,19 @@ import gzip
 import json
 import logging
 import warnings
+import sys
 from vggt.utils.load_fn import load_and_preprocess_images, preprocess_depth_maps
 import cv2
 from utils.eval_pose import calculate_auc_np, align_to_first_camera, se3_to_relative_pose_error
 from utils.eval_depth import thresh_inliers,m_rel_ae,sq_rel_ae,align_pred_to_gt,correlation,si_mse,rmse,rmse_log
 from utils.eval_pose import rotation_angle, translation_angle,closed_form_inverse_se3
 from utils.general import set_random_seeds,load_model
+from vggt.utils.geometry import unproject_depth_map_to_point_map
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from visual_util import predictions_to_glb
+
 from ba import run_vggt_with_ba
 import argparse
 import pdb
@@ -38,6 +44,7 @@ def setup_args():
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--cuda_id',type=str, help='CUDA device ID')
     parser.add_argument('--model_path', type=str, default='../weights/model.pt', help='Path to the pre-trained model')
+    parser.add_argument('--viz_output', type=str, default=None, help='Path to save visualization output')
     return parser.parse_args()
 
 def estimate_camera_pose_vkitti(predictions,gt_extrinsic, images, num_frames, device):
@@ -206,7 +213,7 @@ def main():
         # Depth estimation 
         valid_mask = torch.logical_and(
         gt_depths.cpu() > 1e-3,     # filter out black background
-        predictions['depth_conf'].cpu() > 5,
+        predictions['depth_conf'].cpu() > 10,
         ).squeeze().numpy()
         
         gt_depths = gt_depths.cpu().numpy()
@@ -214,12 +221,61 @@ def main():
         
         Pearson_corr = correlation(gt_depths, pre_depths, mask=valid_mask)
         si_mse_value= si_mse(gt_depths, pre_depths, mask=valid_mask)
-        inlier_ratio=thresh_inliers(gt_depths, pre_depths, 1.25, mask=valid_mask)
+        
+        
+        align_pred_depths=[]
+        for i in range(args.num_frames):  
+            valid_mask_idx = valid_mask[i]  
+            scale, shift, aligned_pred_depth, exclude = align_pred_to_gt(
+                pre_depths[i], 
+                gt_depths[i],
+                valid_mask_idx
+            )
+            align_pred_depths.append(aligned_pred_depth)
+        align_pred_depths=np.array(align_pred_depths)
+        inlier_ratio=thresh_inliers(gt_depths, align_pred_depths, 1.25, mask=valid_mask)
+        abs_rel=m_rel_ae(gt_depths, align_pred_depths, mask=valid_mask)
+        sq_rel=sq_rel_ae(gt_depths, align_pred_depths, mask=valid_mask)
+        rmse_value= rmse(gt_depths, align_pred_depths, mask=valid_mask)
+        rmse_log_value= rmse_log(gt_depths, align_pred_depths, mask=valid_mask)
         print(f"Camera {camera_id} - Pearson Correlation: {Pearson_corr:.4f}, SI-MSE: {si_mse_value:.4f}, Inlier Ratio: {inlier_ratio:.4f}")
+        print(f"abs_rel: {abs_rel:.4f}, sq_rel: {sq_rel:.4f}, rmse: {rmse_value:.4f}, rmse_log: {rmse_log_value:.4f}")
         
         all_Pearson_corr.append(Pearson_corr)
         all_si_mse.append(si_mse_value)
         all_inlier_ratio.append(inlier_ratio)
+        
+        # Virtualization
+        extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
+        predictions["extrinsic"] = extrinsic
+        predictions["intrinsic"] = intrinsic
+        for key in predictions.keys():
+            if isinstance(predictions[key], torch.Tensor):
+                predictions[key] = predictions[key].cpu().numpy().squeeze(0)  # remove batch dimension
+        predictions['pose_enc_list'] = None # remove pose_enc_list
+
+        world_points = unproject_depth_map_to_point_map(predictions["depth"], predictions["extrinsic"], predictions["intrinsic"])
+        predictions["world_points_from_depth"] = world_points
+        
+        os.makedirs(args.viz_output, exist_ok=True)
+        glbfile = os.path.join(
+        args.viz_output,
+        f"glbscene_{args.sceneid}_{args.scene}_{args.stride}.glb",
+    )
+
+        # Convert predictions to GLB
+        glbscene = predictions_to_glb(
+            predictions,
+            conf_thres=10,
+            filter_by_frames="all",
+            mask_black_bg=False,
+            mask_white_bg=False,
+            show_cam=True,
+            mask_sky=False,
+            target_dir=args.viz_output,
+            prediction_mode="Depth",
+        )
+        glbscene.export(file_obj=glbfile)
 
     mean_auc_30 = np.mean(all_auc_30)
     mean_auc_15 = np.mean(all_auc_15)
@@ -232,8 +288,6 @@ def main():
     print(f"\n--- Mean AUC across all cameras ---")
     print(f"Mean AUC@30: {mean_auc_30:.4f}, Mean AUC@15: {mean_auc_15:.4f}, Mean AUC@5: {mean_auc_5:.4f}, Mean AUC@3: {mean_auc_3:.4f}")
     print(f"Mean Pearson Correlation: {mean_Pearson_corr:.4f}, Mean SI-MSE: {mean_si_mse:.4f}, Mean Inlier Ratio: {mean_inlier_ratio:.4f}")   
-    
-    # inlier_ratio=thresh_inliers(blur_depth, gt_depth, 1.03)
 
 if __name__ == "__main__":
     main()
@@ -248,5 +302,6 @@ Example:
     --stride 3 \
     --seed 77 \
     --cuda_id 0 \
-    --model_path ../weights/model.pt 
+    --model_path ../weights/model.pt \
+    --viz_output ./viz_output
 '''
