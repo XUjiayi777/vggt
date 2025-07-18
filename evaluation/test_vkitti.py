@@ -8,15 +8,18 @@ import warnings
 import sys
 from vggt.utils.load_fn import load_and_preprocess_images, preprocess_depth_maps
 import cv2
+from chamfer_distance import ChamferDistance as chamfer_dist
 from utils.eval_pose import calculate_auc_np, align_to_first_camera, se3_to_relative_pose_error
 from utils.eval_depth import thresh_inliers,m_rel_ae,sq_rel_ae,align_pred_to_gt,correlation,si_mse,rmse,rmse_log
 from utils.eval_pose import rotation_angle, translation_angle,closed_form_inverse_se3
 from utils.general import set_random_seeds,load_model
-from vggt.utils.geometry import unproject_depth_map_to_point_map
+from vggt.utils.geometry import unproject_depth_map_to_point_map, project_world_points_to_cam
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from visual_util import predictions_to_glb
+from training.train_utils.normalization import normalize_camera_extrinsics_and_points_batch
 
 from ba import run_vggt_with_ba
 import argparse
@@ -67,11 +70,11 @@ def estimate_camera_pose_vkitti(predictions,gt_extrinsic, images, num_frames, de
     with torch.cuda.amp.autocast(dtype=torch.float64):
         extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
         pred_extrinsic = extrinsic[0] # Predicted extrinsic w2c
-        gt_extrinsic = torch.from_numpy(gt_extrinsic).to(device)
+        gt_extrinsic = gt_extrinsic.to(device)
         
         add_row = torch.tensor([0, 0, 0, 1], device=device).expand(pred_extrinsic.size(0), 1, 4)
         pred_se3 = torch.cat((pred_extrinsic, add_row), dim=1) #w2c
-        gt_se3 = gt_extrinsic
+        gt_se3 = torch.cat((gt_extrinsic, add_row), dim=1)
         
         # Set the coordinate of the first camera as the coordinate of the world
         # NOTE: DO NOT REMOVE THIS UNLESS YOU KNOW WHAT YOU ARE DOING
@@ -180,23 +183,43 @@ def main():
             
             if depth_arrays:
                 depth_array = np.stack(depth_arrays, axis=0)
-                gt_depths = preprocess_depth_maps(depth_array).to(device).squeeze()
+                gt_depths = preprocess_depth_maps(depth_array).squeeze()
                 print(f"Loaded {len(depth_arrays)} depth maps, shape: {gt_depths.shape}")
             else:
                 print("No depth files found")
         
         gt_extrinsic = []
+        gt_intrinsic = []
         for image_idx in image_indices:
             extri_opencv = each_camera_parameters[image_idx][2:].reshape(4, 4)
-            gt_extrinsic.append(extri_opencv)  #
+            intri_opencv = np.eye(3)
+            intri_opencv[0, 0] = camera_intrinsic[image_idx][-4]
+            intri_opencv[1, 1] = camera_intrinsic[image_idx][-3]
+            intri_opencv[0, 2] = camera_intrinsic[image_idx][-2]
+            intri_opencv[1, 2] = camera_intrinsic[image_idx][-1]
+            gt_extrinsic.append(extri_opencv[:3,:])  
+            gt_intrinsic.append(intri_opencv)
         gt_extrinsic = np.stack(gt_extrinsic, axis=0)
-                
+        gt_intrinsic = np.stack(gt_intrinsic, axis=0)
+        
+        world_coords_points, camera_coords_points = (
+            unproject_depth_map_to_point_map(gt_depths, gt_extrinsic, gt_intrinsic)
+        )        
+        new_extrinsics, new_cam_points, new_world_points, new_depths = normalize_camera_extrinsics_and_points_batch(
+            torch.from_numpy(gt_extrinsic).unsqueeze(0), torch.from_numpy(camera_coords_points).unsqueeze(0), torch.from_numpy(world_coords_points).unsqueeze(0), gt_depths.unsqueeze(0),
+            point_masks =  gt_depths.unsqueeze(0) > 1e-8)
+        
         with torch.no_grad():
             with torch.cuda.amp.autocast(dtype=dtype):
                 predictions = model(images)
+        # extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
+        # predictions["extrinsic"] = extrinsic
+        # predictions["intrinsic"] = intrinsic
+        # world_points = unproject_depth_map_to_point_map(predictions["depth"], predictions["extrinsic"], predictions["intrinsic"])
+        # predictions["world_points_from_depth"] = world_points
         
         # Camera pose estimation (AUC)
-        rError, tError = estimate_camera_pose_vkitti(predictions, gt_extrinsic, images, args.num_frames, device)
+        rError, tError = estimate_camera_pose_vkitti(predictions, new_extrinsics.squeeze(0), images, args.num_frames, device)
         
         Auc_30, _ = calculate_auc_np(rError, tError, max_threshold=30)
         Auc_15, _ = calculate_auc_np(rError, tError, max_threshold=15)
@@ -212,32 +235,22 @@ def main():
         
         # Depth estimation 
         valid_mask = torch.logical_and(
-        gt_depths.cpu() > 1e-3,     # filter out black background
+        new_depths.cpu().squeeze(0) > 1e-3,     # filter out black background
         predictions['depth_conf'].cpu() > 10,
         ).squeeze().numpy()
         
-        gt_depths = gt_depths.cpu().numpy()
+        gt_depths = new_depths.cpu().squeeze(0) .numpy()
         pre_depths = predictions['depth'].squeeze().cpu().numpy()
         
         Pearson_corr = correlation(gt_depths, pre_depths, mask=valid_mask)
         si_mse_value= si_mse(gt_depths, pre_depths, mask=valid_mask)
         
+        inlier_ratio=thresh_inliers(gt_depths, gt_depths, 1.25, mask=valid_mask)
+        abs_rel=m_rel_ae(gt_depths, gt_depths, mask=valid_mask)
+        sq_rel=sq_rel_ae(gt_depths, gt_depths, mask=valid_mask)
+        rmse_value= rmse(gt_depths, gt_depths, mask=valid_mask)
+        rmse_log_value= rmse_log(gt_depths, gt_depths, mask=valid_mask)
         
-        align_pred_depths=[]
-        for i in range(args.num_frames):  
-            valid_mask_idx = valid_mask[i]  
-            scale, shift, aligned_pred_depth, exclude = align_pred_to_gt(
-                pre_depths[i], 
-                gt_depths[i],
-                valid_mask_idx
-            )
-            align_pred_depths.append(aligned_pred_depth)
-        align_pred_depths=np.array(align_pred_depths)
-        inlier_ratio=thresh_inliers(gt_depths, align_pred_depths, 1.25, mask=valid_mask)
-        abs_rel=m_rel_ae(gt_depths, align_pred_depths, mask=valid_mask)
-        sq_rel=sq_rel_ae(gt_depths, align_pred_depths, mask=valid_mask)
-        rmse_value= rmse(gt_depths, align_pred_depths, mask=valid_mask)
-        rmse_log_value= rmse_log(gt_depths, align_pred_depths, mask=valid_mask)
         print(f"Camera {camera_id} - Pearson Correlation: {Pearson_corr:.4f}, SI-MSE: {si_mse_value:.4f}, Inlier Ratio: {inlier_ratio:.4f}")
         print(f"abs_rel: {abs_rel:.4f}, sq_rel: {sq_rel:.4f}, rmse: {rmse_value:.4f}, rmse_log: {rmse_log_value:.4f}")
         
@@ -245,37 +258,28 @@ def main():
         all_si_mse.append(si_mse_value)
         all_inlier_ratio.append(inlier_ratio)
         
-        # Virtualization
-        extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
-        predictions["extrinsic"] = extrinsic
-        predictions["intrinsic"] = intrinsic
-        for key in predictions.keys():
-            if isinstance(predictions[key], torch.Tensor):
-                predictions[key] = predictions[key].cpu().numpy().squeeze(0)  # remove batch dimension
-        predictions['pose_enc_list'] = None # remove pose_enc_list
-
-        world_points = unproject_depth_map_to_point_map(predictions["depth"], predictions["extrinsic"], predictions["intrinsic"])
-        predictions["world_points_from_depth"] = world_points
+        # Accuracy, completeness and Chamfer distance
+        chd = chamfer_dist()
         
-        os.makedirs(args.viz_output, exist_ok=True)
-        glbfile = os.path.join(
-        args.viz_output,
-        f"glbscene_{args.sceneid}_{args.scene}_{args.stride}.glb",
-    )
+    #     # Virtualization
+    #     glbfile = os.path.join(
+    #     args.viz_output,
+    #     f"glbscene_{args.sceneid}_{args.scene}_{args.stride}.glb",
+    # )
 
-        # Convert predictions to GLB
-        glbscene = predictions_to_glb(
-            predictions,
-            conf_thres=10,
-            filter_by_frames="all",
-            mask_black_bg=False,
-            mask_white_bg=False,
-            show_cam=True,
-            mask_sky=False,
-            target_dir=args.viz_output,
-            prediction_mode="Depth",
-        )
-        glbscene.export(file_obj=glbfile)
+    #     # Convert predictions to GLB
+    #     glbscene = predictions_to_glb(
+    #         predictions,
+    #         conf_thres=10,
+    #         filter_by_frames="all",
+    #         mask_black_bg=False,
+    #         mask_white_bg=False,
+    #         show_cam=True,
+    #         mask_sky=False,
+    #         target_dir=args.viz_output,
+    #         prediction_mode="Depth",
+    #     )
+    #     glbscene.export(file_obj=glbfile)
 
     mean_auc_30 = np.mean(all_auc_30)
     mean_auc_15 = np.mean(all_auc_15)
@@ -297,7 +301,7 @@ Example:
  python test_vkitti.py \
     --data_dir  /data/jxucm/vkitti \
     --sceneid Scene01 \
-    --scene clone \
+    --scene underwater \
     --num_frames 20 \
     --stride 3 \
     --seed 77 \

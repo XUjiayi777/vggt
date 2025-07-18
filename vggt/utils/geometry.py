@@ -32,16 +32,21 @@ def unproject_depth_map_to_point_map(
         extrinsics_cam = extrinsics_cam.cpu().numpy()
     if isinstance(intrinsics_cam, torch.Tensor):
         intrinsics_cam = intrinsics_cam.cpu().numpy()
+    if len(depth_map.shape)==3:
+        depth_map = depth_map[..., np.newaxis]
 
     world_points_list = []
+    camera_points_list = []
     for frame_idx in range(depth_map.shape[0]):
-        cur_world_points, _, _ = depth_to_world_coords_points(
+        cur_world_points, cur_camera_points, _ = depth_to_world_coords_points(
             depth_map[frame_idx].squeeze(-1), extrinsics_cam[frame_idx], intrinsics_cam[frame_idx]
         )
         world_points_list.append(cur_world_points)
+        camera_points_list.append(cur_camera_points)
     world_points_array = np.stack(world_points_list, axis=0)
+    camera_points_array = np.stack(camera_points_list, axis=0)
 
-    return world_points_array
+    return world_points_array, camera_points_array
 
 
 def depth_to_world_coords_points(
