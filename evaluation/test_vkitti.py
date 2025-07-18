@@ -50,26 +50,23 @@ def setup_args():
     parser.add_argument('--viz_output', type=str, default=None, help='Path to save visualization output')
     return parser.parse_args()
 
-def estimate_camera_pose_vkitti(predictions,gt_extrinsic, images, num_frames, device):
+def estimate_camera_pose_vkitti(pred_extrinsic, gt_extrinsic, num_frames, device):
     """
     Process a single sequence and compute pose errors.
 
     Args:
-        predictions: VGGT predictions
+        pred_extrinsic: Predicted extrinsics from the model
         gt_extrinsic: Ground truth extrinsics 
-        images: Batched tensor of preprocessed images with shape (N, 3, H, W)
         num_frames: Number of frames to sample
         device: Device to run on
         
-
     Returns:
         rError: Rotation errors
         tError: Translation errors
     """
 
     with torch.cuda.amp.autocast(dtype=torch.float64):
-        extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
-        pred_extrinsic = extrinsic[0] # Predicted extrinsic w2c
+        pred_extrinsic = pred_extrinsic.to(device) # Predicted extrinsic w2c
         gt_extrinsic = gt_extrinsic.to(device)
         
         add_row = torch.tensor([0, 0, 0, 1], device=device).expand(pred_extrinsic.size(0), 1, 4)
@@ -141,6 +138,9 @@ def main():
     all_Pearson_corr = []
     all_si_mse = []
     all_inlier_ratio = []
+    all_accuracy = []
+    all_completeness = []
+    all_chamfer_dis = []
 
     for camera_id in [0, 1]:
         print(f"\n--- Processing Camera {camera_id} ---")
@@ -202,6 +202,7 @@ def main():
         gt_extrinsic = np.stack(gt_extrinsic, axis=0)
         gt_intrinsic = np.stack(gt_intrinsic, axis=0)
         
+        # Normalize GT
         world_coords_points, camera_coords_points = (
             unproject_depth_map_to_point_map(gt_depths, gt_extrinsic, gt_intrinsic)
         )        
@@ -212,9 +213,13 @@ def main():
         with torch.no_grad():
             with torch.cuda.amp.autocast(dtype=dtype):
                 predictions = model(images)
-                        
+                
+        extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
+        predictions["extrinsic"] = extrinsic
+        predictions["intrinsic"] = intrinsic   
+                     
         # Camera pose estimation (AUC)
-        rError, tError = estimate_camera_pose_vkitti(predictions, new_extrinsics.squeeze(0), images, args.num_frames, device)
+        rError, tError = estimate_camera_pose_vkitti(predictions["extrinsic"][0], new_extrinsics.squeeze(0), args.num_frames, device)
         
         Auc_30, _ = calculate_auc_np(rError, tError, max_threshold=30)
         Auc_15, _ = calculate_auc_np(rError, tError, max_threshold=15)
@@ -259,16 +264,16 @@ def main():
         gt_pt = new_world_points.squeeze(0).view(args.num_frames,-1,3).to(dtype=torch.float32, device=device)
         dist1, dist2, idx1, idx2 = chd(pre_pt,gt_pt)
         dist3, _,_,_ = chd(gt_pt, pre_pt)
-        accuracy =torch.mean(dist1)
-        completeness = torch.mean(dist2)
+        accuracy =torch.mean(dist1).cpu().numpy()
+        completeness = torch.mean(dist2).cpu().numpy()
         chamfer_dis = (accuracy + completeness) / 2
         print(f"Accuracy: {accuracy.item():.4f}, Completeness: {completeness.item():.4f}, Chamfer Distance: {chamfer_dis.item():.4f}")
-
+        
+        all_accuracy.append(accuracy.item())
+        all_completeness.append(completeness.item())
+        all_chamfer_dis.append(chamfer_dis)
         
         # Virtualization
-        extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
-        predictions["extrinsic"] = extrinsic
-        predictions["intrinsic"] = intrinsic
         for key in predictions.keys():
             if isinstance(predictions[key], torch.Tensor):
                 predictions[key] = predictions[key].cpu().numpy().squeeze(0)  
@@ -279,7 +284,7 @@ def main():
         os.makedirs(args.viz_output, exist_ok=True)
         glbfile = os.path.join(
             args.viz_output,
-            f"glbscene_{args.sceneid}_{args.scene}_{args.stride}.glb"
+            f"vkitti_{args.sceneid}_{args.scene}_{args.stride}.glb"
         )
 
         # Convert predictions to GLB
@@ -289,7 +294,7 @@ def main():
             filter_by_frames="all",
             mask_black_bg=False,
             mask_white_bg=False,
-            show_cam=True,
+            show_cam=False,
             mask_sky=False,
             target_dir=args.viz_output,
             prediction_mode="Depth",
@@ -303,11 +308,15 @@ def main():
     mean_Pearson_corr = np.mean(all_Pearson_corr)
     mean_si_mse = np.mean(all_si_mse)
     mean_inlier_ratio = np.mean(all_inlier_ratio)
+    mean_accuracy = np.mean(all_accuracy)
+    mean_completeness = np.mean(all_completeness)
+    mean_chamfer_dis = np.mean(all_chamfer_dis)
     
     print(f"\n--- Mean AUC across all cameras ---")
     print(f"Mean AUC@30: {mean_auc_30:.4f}, Mean AUC@15: {mean_auc_15:.4f}, Mean AUC@5: {mean_auc_5:.4f}, Mean AUC@3: {mean_auc_3:.4f}")
     print(f"Mean Pearson Correlation: {mean_Pearson_corr:.4f}, Mean SI-MSE: {mean_si_mse:.4f}, Mean Inlier Ratio: {mean_inlier_ratio:.4f}")   
-
+    print(f"Mean Accuracy: {mean_accuracy:.4f}, Mean Completeness: {mean_completeness:.4f}, Mean Chamfer Distance: {mean_chamfer_dis:.4f}")
+    
 if __name__ == "__main__":
     main()
     
@@ -316,7 +325,7 @@ Example:
  python test_vkitti.py \
     --data_dir  /data/jxucm/vkitti \
     --sceneid Scene01 \
-    --scene underwater \
+    --scene clone \
     --num_frames 20 \
     --stride 3 \
     --seed 77 \
