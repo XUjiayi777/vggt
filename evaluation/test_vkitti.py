@@ -212,12 +212,7 @@ def main():
         with torch.no_grad():
             with torch.cuda.amp.autocast(dtype=dtype):
                 predictions = model(images)
-        # extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
-        # predictions["extrinsic"] = extrinsic
-        # predictions["intrinsic"] = intrinsic
-        # world_points = unproject_depth_map_to_point_map(predictions["depth"], predictions["extrinsic"], predictions["intrinsic"])
-        # predictions["world_points_from_depth"] = world_points
-        
+                        
         # Camera pose estimation (AUC)
         rError, tError = estimate_camera_pose_vkitti(predictions, new_extrinsics.squeeze(0), images, args.num_frames, device)
         
@@ -236,7 +231,7 @@ def main():
         # Depth estimation 
         valid_mask = torch.logical_and(
         new_depths.cpu().squeeze(0) > 1e-3,     # filter out black background
-        predictions['depth_conf'].cpu() > 10,
+        predictions['depth_conf'].cpu() > 1e-3,
         ).squeeze().numpy()
         
         gt_depths = new_depths.cpu().squeeze(0) .numpy()
@@ -260,26 +255,46 @@ def main():
         
         # Accuracy, completeness and Chamfer distance
         chd = chamfer_dist()
-        
-    #     # Virtualization
-    #     glbfile = os.path.join(
-    #     args.viz_output,
-    #     f"glbscene_{args.sceneid}_{args.scene}_{args.stride}.glb",
-    # )
+        pre_pt = predictions['world_points'].squeeze(0).view(args.num_frames,-1,3).to(dtype=torch.float32, device=device)
+        gt_pt = new_world_points.squeeze(0).view(args.num_frames,-1,3).to(dtype=torch.float32, device=device)
+        dist1, dist2, idx1, idx2 = chd(pre_pt,gt_pt)
+        dist3, _,_,_ = chd(gt_pt, pre_pt)
+        accuracy =torch.mean(dist1)
+        completeness = torch.mean(dist2)
+        chamfer_dis = (accuracy + completeness) / 2
+        print(f"Accuracy: {accuracy.item():.4f}, Completeness: {completeness.item():.4f}, Chamfer Distance: {chamfer_dis.item():.4f}")
 
-    #     # Convert predictions to GLB
-    #     glbscene = predictions_to_glb(
-    #         predictions,
-    #         conf_thres=10,
-    #         filter_by_frames="all",
-    #         mask_black_bg=False,
-    #         mask_white_bg=False,
-    #         show_cam=True,
-    #         mask_sky=False,
-    #         target_dir=args.viz_output,
-    #         prediction_mode="Depth",
-    #     )
-    #     glbscene.export(file_obj=glbfile)
+        
+        # Virtualization
+        extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
+        predictions["extrinsic"] = extrinsic
+        predictions["intrinsic"] = intrinsic
+        for key in predictions.keys():
+            if isinstance(predictions[key], torch.Tensor):
+                predictions[key] = predictions[key].cpu().numpy().squeeze(0)  
+        predictions['pose_enc_list'] = None # remove pose_enc_list
+        world_points, _ = unproject_depth_map_to_point_map(predictions["depth"], predictions["extrinsic"], predictions["intrinsic"])
+        predictions["world_points_from_depth"] = world_points
+        
+        os.makedirs(args.viz_output, exist_ok=True)
+        glbfile = os.path.join(
+            args.viz_output,
+            f"glbscene_{args.sceneid}_{args.scene}_{args.stride}.glb"
+        )
+
+        # Convert predictions to GLB
+        glbscene = predictions_to_glb(
+            predictions,
+            conf_thres=10,
+            filter_by_frames="all",
+            mask_black_bg=False,
+            mask_white_bg=False,
+            show_cam=True,
+            mask_sky=False,
+            target_dir=args.viz_output,
+            prediction_mode="Depth",
+        )
+        glbscene.export(file_obj=glbfile)
 
     mean_auc_30 = np.mean(all_auc_30)
     mean_auc_15 = np.mean(all_auc_15)
