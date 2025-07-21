@@ -109,6 +109,10 @@ def main():
     all_Pearson_corr = []
     all_si_mse = []
     all_inlier_ratio = []
+    all_abs_rel = []
+    all_sq_rel = []
+    all_rmse = []
+    all_rmse_log = []
     all_accuracy = []
     all_completeness = []
     all_chamfer_dis = []
@@ -249,11 +253,11 @@ def main():
             Pearson_corr = correlation(gt_depths, pre_depths, mask=valid_mask)
             si_mse_value= si_mse(gt_depths, pre_depths, mask=valid_mask)
             
-            inlier_ratio=thresh_inliers(gt_depths, gt_depths, 1.25, mask=valid_mask)
-            abs_rel=m_rel_ae(gt_depths, gt_depths, mask=valid_mask)
-            sq_rel=sq_rel_ae(gt_depths, gt_depths, mask=valid_mask)
-            rmse_value= rmse(gt_depths, gt_depths, mask=valid_mask)
-            rmse_log_value= rmse_log(gt_depths, gt_depths, mask=valid_mask)
+            inlier_ratio=thresh_inliers(gt_depths, pre_depths, 1.25, mask=valid_mask)
+            abs_rel=m_rel_ae(gt_depths, pre_depths, mask=valid_mask)
+            sq_rel=sq_rel_ae(gt_depths, pre_depths, mask=valid_mask)
+            rmse_value= rmse(gt_depths, pre_depths, mask=valid_mask)
+            rmse_log_value= rmse_log(gt_depths, pre_depths, mask=valid_mask)
             
             print(f"Camera {camera_id} - Pearson Correlation: {Pearson_corr:.4f}, SI-MSE: {si_mse_value:.4f}, Inlier Ratio: {inlier_ratio:.4f}")
             print(f"abs_rel: {abs_rel:.4f}, sq_rel: {sq_rel:.4f}, rmse: {rmse_value:.4f}, rmse_log: {rmse_log_value:.4f}")
@@ -261,6 +265,10 @@ def main():
             all_Pearson_corr.append(Pearson_corr)
             all_si_mse.append(si_mse_value)
             all_inlier_ratio.append(inlier_ratio)
+            all_abs_rel.append(abs_rel)
+            all_sq_rel.append(sq_rel)
+            all_rmse.append(rmse_value)
+            all_rmse_log.append(rmse_log_value)
             
             # Accuracy, completeness and Chamfer distance
             chd = chamfer_dist()
@@ -313,6 +321,10 @@ def main():
     mean_Pearson_corr = np.mean(all_Pearson_corr)
     mean_si_mse = np.mean(all_si_mse)
     mean_inlier_ratio = np.mean(all_inlier_ratio)
+    mean_abs_rel = np.mean(all_abs_rel)
+    mean_sq_rel = np.mean(all_sq_rel)
+    mean_rmse = np.mean(all_rmse)
+    mean_rmse_log = np.mean(all_rmse_log)
     mean_accuracy = np.mean(all_accuracy)
     mean_completeness = np.mean(all_completeness)
     mean_chamfer_dis = np.mean(all_chamfer_dis)
@@ -320,6 +332,7 @@ def main():
     print(f"\n--- Mean AUC across all scenes ---")
     print(f"Mean AUC@30: {mean_auc_30:.4f}, Mean AUC@15: {mean_auc_15:.4f}, Mean AUC@5: {mean_auc_5:.4f}, Mean AUC@3: {mean_auc_3:.4f}")
     print(f"Mean Pearson Correlation: {mean_Pearson_corr:.4f}, Mean SI-MSE: {mean_si_mse:.4f}, Mean Inlier Ratio: {mean_inlier_ratio:.4f}")   
+    print(f"Mean abs_rel: {mean_abs_rel:.4f}, Mean sq_rel: {mean_sq_rel:.4f}, Mean RMSE: {mean_rmse:.4f}, Mean RMSE Log: {mean_rmse_log:.4f}")
     print(f"Mean Accuracy: {mean_accuracy:.4f}, Mean Completeness: {mean_completeness:.4f}, Mean Chamfer Distance: {mean_chamfer_dis:.4f}")
     
 if __name__ == "__main__":
@@ -329,7 +342,7 @@ if __name__ == "__main__":
 Example:
  python test_vkitti.py \
     --data_dir  /data/jxucm/vkitti \
-    --scene underwater \
+    --scene clone \
     --num_frames 20 \
     --stride 3 \
     --seed 77 \
