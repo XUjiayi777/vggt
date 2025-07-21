@@ -76,18 +76,45 @@ def quat2rot(quats):
     
     return np.stack(rotation_matrices, axis=0).astype(np.float32)
 
-def parse_extrinsic_file(extrinsic_file):
+def parse_camera_param_file(extrinsic_file, intrinsic_file):
     """
-    Parse COLMAP extrinsic file and return extrinsic matrices.
+    Parse COLMAP extrinsic and intrinsic files to return matched matrices.
     
     Args:
         extrinsic_file: Path to the extrinsic.txt file
+        intrinsic_file: Path to the intrinsic.txt file
         
     Returns:
-        extrinsic_matrices: (N, 4, 4) numpy array of extrinsic matrices
-        image_names: List of image names
+        extrinsic_matrices: (N, 3, 4) numpy array of extrinsic matrices
+        intrinsic_matrices: (N, 3, 3) numpy array of intrinsic matrices
     """
+    # First, parse the intrinsic file to create a camera_id -> intrinsic_matrix mapping
+    intrinsic_dict = {}
+    with open(intrinsic_file, 'r') as f:
+        lines = f.readlines()
+        
+    for line in lines:
+        line = line.strip()
+        if line and not line.startswith('#'):
+            # Parse: CAMERA_ID MODEL WIDTH HEIGHT fx fy cx cy
+            parts = line.split()
+            camera_id = int(parts[0])
+            fx = float(parts[4])
+            fy = float(parts[5])
+            cx = float(parts[6])
+            cy = float(parts[7])
+            
+            intrinsic_matrix = np.array([
+                [fx,  0, cx],
+                [ 0, fy, cy],
+                [ 0,  0,  1]
+            ])
+            intrinsic_dict[camera_id] = intrinsic_matrix
+    
+    print(f"Found {len(intrinsic_dict)} cameras in intrinsics: {list(intrinsic_dict.keys())}")
+    
     extrinsic_data = []
+    camera_ids = []
     
     with open(extrinsic_file, 'r') as f:
         lines = f.readlines()
@@ -99,23 +126,40 @@ def parse_extrinsic_file(extrinsic_file):
             parts = line.split()
             qw, qx, qy, qz = float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])
             tx, ty, tz = float(parts[5]), float(parts[6]), float(parts[7])
+            camera_id = int(parts[8])
+            
             extrinsic_data.append([qw, qx, qy, qz, tx, ty, tz])
+            camera_ids.append(camera_id)
     
-    # Convert to numpy arrays
     extrinsic_data = np.array(extrinsic_data)
     quaternions = extrinsic_data[:, :4]  # [qw, qx, qy, qz]
     translations = extrinsic_data[:, 4:7]  # [tx, ty, tz]
-    
-    # Convert quaternions to rotation matrices
+    pdb.set_trace()
+
     rotation_matrices = quat2rot(quaternions)
     
-    # Construct 4x4 extrinsic matrices
     num_frames = len(extrinsic_data)
     extrinsic_matrices = np.zeros((num_frames, 3, 4))
     extrinsic_matrices[:, :3, :3] = rotation_matrices
     extrinsic_matrices[:, :3, 3] = translations
-
-    return extrinsic_matrices
+    
+    # Match intrinsic matrices to extrinsics based on camera IDs
+    intrinsic_matrices = []
+    for cam_id in camera_ids:
+        if cam_id in intrinsic_dict:
+            intrinsic_matrices.append(intrinsic_dict[cam_id])
+        else:
+            print(f"Warning: Camera ID {cam_id} not found in intrinsics file")
+            # Use the first available camera as fallback
+            fallback_id = list(intrinsic_dict.keys())[0]
+            intrinsic_matrices.append(intrinsic_dict[fallback_id])
+            print(f"Using camera {fallback_id} as fallback")
+    
+    intrinsic_matrices = np.array(intrinsic_matrices)
+    
+    print(f"Matched {len(camera_ids)} images with camera IDs: {set(camera_ids)}")
+    
+    return extrinsic_matrices, intrinsic_matrices
 
 def estimate_camera_pose_ETH3D(pred_extrinsic, gt_extrinsic, num_frames, device):
     """
@@ -199,6 +243,8 @@ def main():
             return
     
     for scene in scene_dirs:
+        if scene == "facade":
+            continue
         print(f"\n--- Processing scene {scene} ---")
         scene_path = os.path.join(args.data_dir, scene)
         depth_path = os.path.join(scene_path, "depths")
@@ -220,45 +266,12 @@ def main():
         
         # GT camera
         extrinsic_file = os.path.join(scene_path, "cams/extrinsic.txt")
-        if not os.path.exists(extrinsic_file):
-            print(f"Extrinsic file not found: {extrinsic_file}")
-            continue
+        intrinsic_file = os.path.join(scene_path, "cams/intrinsic.txt")
             
-        gt_extrinsic = parse_extrinsic_file(extrinsic_file)
+        gt_extrinsic, gt_intrinsic = parse_camera_param_file(extrinsic_file, intrinsic_file)
         print(f"Loaded {len(gt_extrinsic)} extrinsic matrices")
         print(f"Extrinsic matrices shape: {gt_extrinsic.shape}")
-        
-        intrinsic_file = os.path.join(scene_path, "cams/intrinsic.txt")
-        with open(intrinsic_file, 'r') as f:
-            lines = f.readlines()
-            camera_line = None
-            for line in lines:
-                line = line.strip()
-                if line and not line.startswith('#'):
-                    camera_line = line
-                    break
-        
-        if camera_line is None:
-            print(f"No camera data found in {intrinsic_file}")
-            continue
-            
-        # Parse camera parameters: CAMERA_ID MODEL WIDTH HEIGHT fx fy cx cy
-        params = camera_line.split()
-        width = int(params[2])
-        height = int(params[3])
-        fx = float(params[4])
-        fy = float(params[5])
-        cx = float(params[6])
-        cy = float(params[7])
-        
-        single_camera_intrinsics = np.array([
-            [fx,  0, cx],
-            [ 0, fy, cy],
-            [ 0,  0,  1]
-        ])        
-        
-        gt_intrinsic = np.tile(single_camera_intrinsics, (len(gt_extrinsic), 1, 1))
-        print(f"Extrinsic matrices shape: {gt_intrinsic.shape}")   
+        print(f"Intrinsic matrices shape: {gt_intrinsic.shape}")   
         
         # GT depths
         gt_depths = None
