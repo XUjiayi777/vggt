@@ -173,12 +173,12 @@ def main():
     all_auc_15 = []
     all_auc_5 = []
     all_auc_3 = []
-    # all_Pearson_corr = []
-    # all_si_mse = []
-    # all_inlier_ratio = []
-    # all_accuracy = []
-    # all_completeness = []
-    # all_chamfer_dis = []
+    all_Pearson_corr = []
+    all_si_mse = []
+    all_inlier_ratio = []
+    all_accuracy = []
+    all_completeness = []
+    all_chamfer_dis = []
 
     scene_dirs=[]
     if args.scene is None:
@@ -274,12 +274,12 @@ def main():
                 print("No depth files found")
          
         # Normalize GT
-        # world_coords_points, camera_coords_points = (
-        #     unproject_depth_map_to_point_map(gt_depths, gt_extrinsic, gt_intrinsic)
-        # )        
-        # new_extrinsics, new_cam_points, new_world_points, new_depths = normalize_camera_extrinsics_and_points_batch(
-        #     torch.from_numpy(gt_extrinsic).unsqueeze(0), torch.from_numpy(camera_coords_points).unsqueeze(0), torch.from_numpy(world_coords_points).unsqueeze(0), gt_depths.unsqueeze(0),
-        #     point_masks =  gt_depths.unsqueeze(0) > 1e-8)
+        world_coords_points, camera_coords_points = (
+            unproject_depth_map_to_point_map(gt_depths, gt_extrinsic, gt_intrinsic)
+        )        
+        new_extrinsics, new_cam_points, new_world_points, new_depths = normalize_camera_extrinsics_and_points_batch(
+            torch.from_numpy(gt_extrinsic).unsqueeze(0), torch.from_numpy(camera_coords_points).unsqueeze(0), torch.from_numpy(world_coords_points).unsqueeze(0), gt_depths.unsqueeze(0),
+            point_masks =  gt_depths.unsqueeze(0) > 1e-8)
         
         with torch.no_grad():
             with torch.cuda.amp.autocast(dtype=dtype):
@@ -290,7 +290,7 @@ def main():
             predictions["intrinsic"] = intrinsic   
                         
             # Camera pose estimation (AUC)
-            rError, tError = estimate_camera_pose_ETH3D(predictions["extrinsic"][0], torch.from_numpy(gt_extrinsic), len(gt_extrinsic), device)
+            rError, tError = estimate_camera_pose_ETH3D(predictions["extrinsic"][0], new_extrinsics.squeeze(0), len(gt_extrinsic), device)
             
             Auc_30, _ = calculate_auc_np(rError, tError, max_threshold=30)
             Auc_15, _ = calculate_auc_np(rError, tError, max_threshold=15)
@@ -304,45 +304,45 @@ def main():
             all_auc_5.append(Auc_5)
             all_auc_3.append(Auc_3)
             
-            # # Depth estimation 
-            # valid_mask = torch.logical_and(
-            # new_depths.cpu().squeeze(0) > 1e-3,     # filter out black background
-            # predictions['depth_conf'].cpu() > 1e-3,
-            # ).squeeze().numpy()
+            # Depth estimation 
+            valid_mask = torch.logical_and(
+            new_depths.cpu().squeeze(0) > 1e-3,     # filter out black background
+            predictions['depth_conf'].cpu() > 1e-3,
+            ).squeeze().numpy()
             
-            # gt_depths = new_depths.cpu().squeeze(0) .numpy()
-            # pre_depths = predictions['depth'].squeeze().cpu().numpy()
+            gt_depths = new_depths.cpu().squeeze(0) .numpy()
+            pre_depths = predictions['depth'].squeeze().cpu().numpy()
             
-            # Pearson_corr = correlation(gt_depths, pre_depths, mask=valid_mask)
-            # si_mse_value= si_mse(gt_depths, pre_depths, mask=valid_mask)
+            Pearson_corr = correlation(gt_depths, pre_depths, mask=valid_mask)
+            si_mse_value= si_mse(gt_depths, pre_depths, mask=valid_mask)
             
-            # inlier_ratio=thresh_inliers(gt_depths, gt_depths, 1.25, mask=valid_mask)
-            # abs_rel=m_rel_ae(gt_depths, gt_depths, mask=valid_mask)
-            # sq_rel=sq_rel_ae(gt_depths, gt_depths, mask=valid_mask)
-            # rmse_value= rmse(gt_depths, gt_depths, mask=valid_mask)
-            # rmse_log_value= rmse_log(gt_depths, gt_depths, mask=valid_mask)
+            inlier_ratio=thresh_inliers(gt_depths, gt_depths, 1.25, mask=valid_mask)
+            abs_rel=m_rel_ae(gt_depths, gt_depths, mask=valid_mask)
+            sq_rel=sq_rel_ae(gt_depths, gt_depths, mask=valid_mask)
+            rmse_value= rmse(gt_depths, gt_depths, mask=valid_mask)
+            rmse_log_value= rmse_log(gt_depths, gt_depths, mask=valid_mask)
             
-            # print(f"Camera {camera_id} - Pearson Correlation: {Pearson_corr:.4f}, SI-MSE: {si_mse_value:.4f}, Inlier Ratio: {inlier_ratio:.4f}")
-            # print(f"abs_rel: {abs_rel:.4f}, sq_rel: {sq_rel:.4f}, rmse: {rmse_value:.4f}, rmse_log: {rmse_log_value:.4f}")
+            print(f"Scene {args.scene} - Pearson Correlation: {Pearson_corr:.4f}, SI-MSE: {si_mse_value:.4f}, Inlier Ratio: {inlier_ratio:.4f}")
+            print(f"abs_rel: {abs_rel:.4f}, sq_rel: {sq_rel:.4f}, rmse: {rmse_value:.4f}, rmse_log: {rmse_log_value:.4f}")
             
-            # all_Pearson_corr.append(Pearson_corr)
-            # all_si_mse.append(si_mse_value)
-            # all_inlier_ratio.append(inlier_ratio)
+            all_Pearson_corr.append(Pearson_corr)
+            all_si_mse.append(si_mse_value)
+            all_inlier_ratio.append(inlier_ratio)
             
-            # # Accuracy, completeness and Chamfer distance
-            # chd = chamfer_dist()
-            # pre_pt = predictions['world_points'].squeeze(0).view(args.num_frames,-1,3).to(dtype=torch.float32, device=device)
-            # gt_pt = new_world_points.squeeze(0).view(args.num_frames,-1,3).to(dtype=torch.float32, device=device)
-            # dist1, dist2, idx1, idx2 = chd(pre_pt,gt_pt)
-            # dist3, _,_,_ = chd(gt_pt, pre_pt)
-            # accuracy =torch.mean(dist1).cpu().numpy()
-            # completeness = torch.mean(dist2).cpu().numpy()
-            # chamfer_dis = (accuracy + completeness) / 2
-            # print(f"Accuracy: {accuracy.item():.4f}, Completeness: {completeness.item():.4f}, Chamfer Distance: {chamfer_dis.item():.4f}")
+            # Accuracy, completeness and Chamfer distance
+            chd = chamfer_dist()
+            pre_pt = predictions['world_points'].squeeze(0).view(len(gt_extrinsic),-1,3).to(dtype=torch.float32, device=device)
+            gt_pt = new_world_points.squeeze(0).view(len(gt_extrinsic),-1,3).to(dtype=torch.float32, device=device)
+            dist1, dist2, idx1, idx2 = chd(pre_pt,gt_pt)
+            dist3, _,_,_ = chd(gt_pt, pre_pt)
+            accuracy =torch.mean(dist1).cpu().numpy()
+            completeness = torch.mean(dist2).cpu().numpy()
+            chamfer_dis = (accuracy + completeness) / 2
+            print(f"Accuracy: {accuracy.item():.4f}, Completeness: {completeness.item():.4f}, Chamfer Distance: {chamfer_dis.item():.4f}")
             
-            # all_accuracy.append(accuracy.item())
-            # all_completeness.append(completeness.item())
-            # all_chamfer_dis.append(chamfer_dis)
+            all_accuracy.append(accuracy.item())
+            all_completeness.append(completeness.item())
+            all_chamfer_dis.append(chamfer_dis)
             
             # # Virtualization
             # if args.viz_output is not None:
@@ -377,17 +377,17 @@ def main():
     mean_auc_15 = np.mean(all_auc_15)
     mean_auc_5 = np.mean(all_auc_5)
     mean_auc_3 = np.mean(all_auc_3)
-    # mean_Pearson_corr = np.mean(all_Pearson_corr)
-    # mean_si_mse = np.mean(all_si_mse)
-    # mean_inlier_ratio = np.mean(all_inlier_ratio)
-    # mean_accuracy = np.mean(all_accuracy)
-    # mean_completeness = np.mean(all_completeness)
-    # mean_chamfer_dis = np.mean(all_chamfer_dis)
+    mean_Pearson_corr = np.mean(all_Pearson_corr)
+    mean_si_mse = np.mean(all_si_mse)
+    mean_inlier_ratio = np.mean(all_inlier_ratio)
+    mean_accuracy = np.mean(all_accuracy)
+    mean_completeness = np.mean(all_completeness)
+    mean_chamfer_dis = np.mean(all_chamfer_dis)
     
     print(f"\n--- Mean AUC across all scenes ---")
     print(f"Mean AUC@30: {mean_auc_30:.4f}, Mean AUC@15: {mean_auc_15:.4f}, Mean AUC@5: {mean_auc_5:.4f}, Mean AUC@3: {mean_auc_3:.4f}")
-    # print(f"Mean Pearson Correlation: {mean_Pearson_corr:.4f}, Mean SI-MSE: {mean_si_mse:.4f}, Mean Inlier Ratio: {mean_inlier_ratio:.4f}")   
-    # print(f"Mean Accuracy: {mean_accuracy:.4f}, Mean Completeness: {mean_completeness:.4f}, Mean Chamfer Distance: {mean_chamfer_dis:.4f}")
+    print(f"Mean Pearson Correlation: {mean_Pearson_corr:.4f}, Mean SI-MSE: {mean_si_mse:.4f}, Mean Inlier Ratio: {mean_inlier_ratio:.4f}")   
+    print(f"Mean Accuracy: {mean_accuracy:.4f}, Mean Completeness: {mean_completeness:.4f}, Mean Chamfer Distance: {mean_chamfer_dis:.4f}")
     
 if __name__ == "__main__":
     main()
