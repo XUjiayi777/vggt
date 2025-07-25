@@ -5,14 +5,15 @@ from PIL import Image
 import glob
 import shutil
 import pdb
+import cv2
 
 WATER = {
     # Base parameters - these will be randomized within ranges
-    "attenuation_range": [[0.2, 0.6], [0.1, 0.3], [0.05, 0.15]],  # [R, G, B] ranges
-    "backscatter_range": [[0.2, 0.4], [0.1, 0.2], [0.05, 0.1]], # [R, G, B] ranges
-    "backscatter_color_range": [[0.05, 0.1], [0.15, 0.25], [0.35, 0.55]], # [R, G, B] ranges
-    "max_depth_range": [10.0, 40.0],           # Range for maximum depth
-    "depth_scale_range": [0.15, 0.25],         # Range for depth scaling
+    "attenuation_range": [[0.35, 0.4], [0.25, 0.3], [0.05, 0.1]],  # [R, G, B] ranges
+    "backscatter_range": [[0.25, 0.3], [0.15, 0.2], [0.05, 0.1]], # [R, G, B] ranges
+    "backscatter_color_range": [[0.05, 0.1], [0.15, 0.20], [0.35, 0.40]], # [R, G, B] ranges
+    "max_depth_range": [10.0, 30.0],           # Range for maximum depth
+    "depth_scale_range": [0.15, 0.20],         # Range for depth scaling
 }
 
 def get_args_parser():
@@ -20,7 +21,7 @@ def get_args_parser():
         description="Generate underwater effects for Virtual KITTI dataset"
     )
     parser.add_argument( 
-        "--data_dir", type=str, default="/data/jxucm/vkitti",
+        "--data_dir", type=str, default="/data/lipeng/jiayi/dataset/vkitti",
         help="Path to the Virtual KITTI dataset directory containing scenes",
     )
     parser.add_argument( 
@@ -85,8 +86,39 @@ def generate_random_water_params(base_params, seed=None):
         "depth_scale": depth_scale,
     }
 
+def generate_turbidity_haze(image_shape, depth, backscatter_color, strength):
+    """
+    Generate a smooth haze layer based on depth and noise, simulating water turbidity.
+    
+    Args:
+        image_shape: (H, W)
+        depth: Scaled depth map (H, W)
+        backscatter_color: (3,) RGB values in [0,1]
+        strength: Controls haze visibility
+    
+    Returns:
+        haze_layer: (H, W, 3) array to add to image
+    """
+    h, w = image_shape
 
-def add_effect_to_image(image_rgb, effect_params, depth, debug=False):
+    # Generate smooth random noise (like low-frequency haze)
+    noise = cv2.GaussianBlur(
+        np.random.rand(h, w).astype(np.float32), 
+        ksize=(0, 0), 
+        sigmaX=10
+    )
+    noise = (noise - noise.min()) / (noise.max() - noise.min())  # Normalize to [0,1]
+
+    depth_norm = depth / (depth.max() + 1e-5)
+    haze_alpha = np.clip(depth_norm * noise * strength, 0, 1)
+
+    haze_layer = np.zeros((h, w, 3), dtype=np.float32)
+    for i in range(3):
+        haze_layer[..., i] = haze_alpha * backscatter_color[i]
+    
+    return haze_layer
+
+def add_effect_to_image(image_rgb, effect_params, depth, debug=False, haze_strength=0.6):
     """
     Apply underwater effect to the RGB image using atmospheric scattering model.
     
@@ -134,6 +166,16 @@ def add_effect_to_image(image_rgb, effect_params, depth, debug=False):
     uw_image = (image_processed * atten_transmission + 
                 backscatter_color * (1 - backscatter_transmission))
     
+    if haze_strength > 0:
+        haze_layer = generate_turbidity_haze(
+            image_shape=uw_image.shape[:2],
+            depth=depth_scaled,
+            backscatter_color=backscatter_color,
+            strength=haze_strength
+        )
+
+        uw_image += haze_layer
+
     uw_image = np.clip(uw_image, 0, 1)
     uw_image_uint8 = (uw_image * 255).astype(np.uint8)
     
